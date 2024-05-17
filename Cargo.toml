@@ -1,0 +1,14 @@
+[package]
+name = "news2tg"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = { version = "0.11", features = ["json"] }
+scraper = "0.12"
+tokio = { version = "1", features = ["full", "signal"] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.5"
+
+tokio-util = { version = "0.6", features = ["full"] }
+teloxide = "0.7"
