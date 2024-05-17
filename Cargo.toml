@@ -11,4 +11,4 @@ serde = { version = "1.0", features = ["derive"] }
 toml = "0.5"
 
 tokio-util = { version = "0.6", features = ["full"] }
-teloxide = "0.7"
+teloxide = "0.12.2"

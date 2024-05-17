@@ -5,3 +5,4 @@ chat_id = "your_chat_id"
 [features]
 fetch_latest = false
 fetch_hot = true
+test = true

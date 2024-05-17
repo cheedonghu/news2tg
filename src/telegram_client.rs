@@ -1,4 +1,3 @@
-use reqwest::{Error,Client};
 use teloxide::prelude::*;
 use teloxide::types::ParseMode;
 
