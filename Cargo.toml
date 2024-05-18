@@ -12,3 +12,4 @@ toml = "0.5"
 
 tokio-util = { version = "0.6", features = ["full"] }
 teloxide = "0.12.2"
+chrono = "0.4.38"

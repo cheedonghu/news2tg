@@ -55,3 +55,4 @@ pub struct Topic {
     pub replies: u64,
     pub id: u64,
 }
+
