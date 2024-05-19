@@ -2,6 +2,7 @@ mod models;
 mod v2ex_client;
 mod config;
 mod tgclient;
+mod tools;
 
 use config::Config;
 use models::Topic;
@@ -40,6 +41,8 @@ async fn fetch_and_notify(
         let section_message = format_topics_message(section_title, &topics, v2ex_client.mutable_pushed_urls(), current_date);
         if !section_message.is_empty() {
             message.push_str(&section_message);
+        }else{
+            println!("暂无新的帖子")
         }
     }
 
@@ -81,7 +84,8 @@ fn format_topics_message(
     pushed_urls: &mut HashMap<String, String>,
     current_date: &str
 ) -> String {
-    let mut message = format!("{}:\n", section_title);
+    // let mut message: String = format!("{}:\n", section_title);
+    let mut message: String=String::new();
     for topic in topics {
         if !pushed_urls.contains_key(&topic.url) {
             message.push_str(&format!("*Title*: [{}]({})\n", topic.title, topic.url));

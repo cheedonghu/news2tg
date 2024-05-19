@@ -1,6 +1,6 @@
 use teloxide::prelude::*;
 use teloxide::types::ParseMode;
-
+use crate::tools::truncate_utf8;
 
 pub struct TgClient {
     pub bot: Bot,
@@ -13,7 +13,8 @@ impl TgClient {
     }
 
     pub async fn send_telegram_message(&self, text: String) -> Result<(), teloxide::RequestError> {
-        self.bot.send_message(self.chat_id, text)
+        let truncated_text=truncate_utf8(&text, 4096);
+        self.bot.send_message(self.chat_id, truncated_text)
             .parse_mode(ParseMode::MarkdownV2)
             .send()
             .await?;
