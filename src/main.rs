@@ -47,7 +47,7 @@ async fn fetch_and_notify(
     }
 
     if !message.is_empty()&&!*v2ex_client.is_first() {
-        if let Err(err) = v2ex_client.tg_client().send_telegram_message( message).await {
+        if let Err(err) = v2ex_client.tg_client().send_telegram_message( &message).await {
             eprintln!("Failed to send Telegram message: {:?}", err);
         }
     }
@@ -88,7 +88,7 @@ fn format_topics_message(
     let mut message: String=String::new();
     for topic in topics {
         if !pushed_urls.contains_key(&topic.url) {
-            message.push_str(&format!("*Title*: [{}]({})\n", topic.title, topic.url));
+            message.push_str(&format!("*主 题*: [{}]({})\n", topic.title, topic.url));
             pushed_urls.insert(topic.url.clone(), current_date.to_string());
         }
     }
