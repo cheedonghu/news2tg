@@ -15,8 +15,6 @@ api调用模块：reqwest
 
 IP池模块?:
 
-线程池模块:
-
 数据解析模块: serde
 
 数据推送模块：teloxide

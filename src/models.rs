@@ -1,5 +1,7 @@
 use serde::Deserialize;
+use clap::Parser;
 
+/// v2ex响应结构
 #[derive(Deserialize, Debug)]
 pub struct Node {
     pub avatar_large: Option<String>,
@@ -19,6 +21,7 @@ pub struct Node {
     pub parent_node_name: Option<String>,
 }
 
+/// v2ex响应结构
 #[derive(Deserialize, Debug)]
 pub struct Member {
     pub id: u64,
@@ -39,6 +42,7 @@ pub struct Member {
     pub last_modified: u64,
 }
 
+/// v2ex响应结构
 #[derive(Deserialize, Debug)]
 pub struct Topic {
     pub node: Node,
@@ -56,3 +60,13 @@ pub struct Topic {
     pub id: u64,
 }
 
+
+
+/// 你的程序的描述
+#[derive(Parser, Debug)]
+#[command(author = "east <cheedonghu@gmail.com>", version = "1.0", about = "Pull news and Push to telegram")]
+struct Args {
+    /// 设置配置文件路径
+    #[arg(short, long, value_name = "FILE")]
+    config: Option<String>,
+}

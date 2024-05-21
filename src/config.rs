@@ -1,18 +1,33 @@
 use serde::Deserialize;
 use std::fs;
+use clap::Parser;
 
-#[derive(Deserialize)]
+#[derive(Parser, Debug)]
+#[command(about = "Reads configuration from a file", long_about = None)]
+pub struct Cli {
+    /// Path to the configuration file
+    #[arg(short, long, default_value="config.toml")]
+    pub config: String,
+    /// Path to output log file
+    #[arg(short, long, default_value = "output.log")]
+    pub output: String,
+}
+
+
+#[derive(Deserialize, Debug)]
 pub struct Features {
     pub fetch_latest: bool,
     pub fetch_hot: bool,
 }
-#[derive(Deserialize)]
+
+
+#[derive(Deserialize, Debug)]
 pub struct TelegramConfig {
     pub api_token: String,
     pub chat_id: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct Config {
     pub features: Features,
     pub telegram: TelegramConfig,
