@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = "0.12.4"
 scraper = "0.19"
 tokio = { version = "1", features = ["full", "signal"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -13,4 +13,4 @@ clap = { version = "4.5.4", features = ["derive"] }
 tokio-util = { version = "0.6", features = ["full"] }
 teloxide = "0.12.2"
 chrono = "0.4.38"
-async-openai = "0.21.0"
+openai_dive = "0.4.8"

@@ -1,56 +1,67 @@
-use async_openai::{Client, config::OpenAIConfig,types::CreateCompletionRequestArgs};
-
+use openai_dive::v1::api::Client;
+use openai_dive::v1::models::Gpt4Engine;
+use openai_dive::v1::resources::chat::{ChatCompletionParameters, ChatMessage, Role,ChatMessageContent};
+// use reqwest::Client;
 
 pub struct AIClient{
-    ai_client: Client<OpenAIConfig>
+    ai_client: Client
 }
 
 impl AIClient{
     pub fn new(api_key:&str) -> Self{
-        let api_key = api_key;
-        let config = OpenAIConfig::new()
-            .with_api_base("https://api.deepseek.com/v1")
-            .with_api_key(api_key)
-            .with_org_id("the-continental");
+        // let api_key = api_key;
+        // let config = OpenAIConfig::new()
+        //     .with_api_base("https://api.deepseek.com/chat")
+        //     .with_api_key(api_key)
+        //     .with_org_id("the-continental");
         
-        let client = Client::with_config(config);
+
+        let http_client= reqwest::Client::builder().build().unwrap();
+
+        let client = Client {
+            http_client: http_client,
+            base_url: "https://api.deepseek.com/v1".to_string(),
+            api_key: String::from(api_key),
+            organization: None,
+            project: None
+        };
+
+
+
         AIClient{ai_client:client}
     }
 
 
     /// 利用大模型总结目标内容
     pub async fn summarize(&self, content:&str)->Result<String,()>{
-        let answer;
+        // let answer;
 
-        // 发送给模型
-        // Create request using builder pattern
-        // Every request struct has companion builder struct with same name + Args suffix
-        let request = CreateCompletionRequestArgs::default()
-        .model("deepseek-chat")
-        .prompt(&format!("帮我用中文总结下面的内容，最大不超过2000字: \n{}",content))
-        // .max_tokens(40_u16)
-        .build()
-        .unwrap();
+        let parameters = ChatCompletionParameters {
+            model: "deepseek-chat".to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: Role::User,
+                    content: ChatMessageContent::Text(format!("帮我用中文总结下面的内容，最大不超过2000字: \n{}",content)),
+                    ..Default::default()
+                },
+            ],
+            // max_tokens: Some(12),
+            ..Default::default()
+        };
+    
+        let result = self.ai_client.chat().create(parameters).await.unwrap();
+    
+        // println!("{:#?}", result);
 
-        // Call API
-        let response = self.ai_client
-        .completions()      // Get the API "group" (completions, images, etc.) from the client
-        .create(request)    // Make the API call in that "group"
-        .await;
+        let summary=match &result.choices.first().unwrap().message.content{
+            ChatMessageContent::Text(text) => {
+                text.clone()
+            },
+            _ => String::from("大模型返回异常")
+        };
+        
 
-        match response {
-            Ok(res) => {
-                println!("Response: {:?}", res);
-                // 继续处理 res
-                answer=String::from(&res.choices.first().unwrap().text);
-            }
-            Err(e) => {
-                println!("API call failed: {:?}", e);
-                answer=String::from("大模型交互失败")
-            }
-        }
-
-        Ok(answer)
+        Ok(summary)
     }
 
 }
@@ -81,7 +92,7 @@ mod tests{
 
 
     #[test]
-    fn test() -> Result<(), Box<dyn Error>>{
+    fn test_llm() -> Result<(), Box<dyn Error>>{
         let config = Config::from_file("config.toml");
         let mut base_date = Utc::now().format("%Y%m%d").to_string();
         // let bot = Bot::new(&config.telegram.api_token);
