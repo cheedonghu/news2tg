@@ -1,16 +1,14 @@
 use reqwest::{Client,Error};
-use crate::models::Topic;
-use crate::tgclient::{self, TgClient};
-use std::collections::HashMap;
-use std::io::{self, Write};
+use crate::models::{SharedItem, Topic};
+use crate::tgclient:: TgClient;
+use std::io::{self};
 
 
 use crate::tools::*;
 
 pub struct V2exClient{
     client: Client,
-    tg_client: TgClient,
-    pushed_urls: HashMap<String, String>,
+    // pushed_urls: HashMap<String, String>,
     current_date: String,
     is_latest_first: bool,
     is_hotest_first: bool
@@ -32,8 +30,7 @@ macro_rules! create_getters {
 create_getters!(
     V2exClient,
     client: Client,
-    tg_client: TgClient,
-    pushed_urls: HashMap<String, String>,
+    // pushed_urls: HashMap<String, String>,
     current_date: String,
     is_latest_first: bool,
     is_hotest_first: bool
@@ -42,8 +39,8 @@ create_getters!(
 
 impl V2exClient {
     
-    pub fn new(client: Client,tg_client: TgClient,pushed_urls: HashMap<String, String>,current_date: String) -> Self{
-        V2exClient{client, tg_client, pushed_urls, current_date,is_latest_first:true,is_hotest_first:true}
+    pub fn new(client: Client,current_date: String) -> Self{
+        V2exClient{client, current_date,is_latest_first:true,is_hotest_first:true}
     }
 
     pub fn update_latest_to_second(&mut self){
@@ -54,9 +51,9 @@ impl V2exClient {
         self.is_hotest_first=false;
     }
 
-    pub fn mutable_pushed_urls(&mut self)->&mut HashMap<String, String>{
-        &mut self.pushed_urls
-    }
+    // pub fn mutable_pushed_urls(&mut self)->&mut HashMap<String, String>{
+    //     &mut self.pushed_urls
+    // }
 
     pub fn update_current_date(&mut self, new_date: &str){
         self.current_date=String::from(new_date);
@@ -74,83 +71,87 @@ impl V2exClient {
         Ok(response)
     }
 
-    
-    /// 清洗获取的帖子内容，保留最新的部分
-    pub fn format_topics_message(
-        &mut self,
-        section_title: &str,
-        topics: &[Topic],
-    ) -> Vec<String> {
-        // let mut message: String = format!("{}:\n", section_title);
-        // let mut message: String=String::new();
-        let mut new_topic_message=Vec::new();
-        for topic in topics {
-            if !self.pushed_urls.contains_key(&topic.url) {
-                let title=truncate_utf8(&topic.title, 4000);
-                let title=escape_markdown_v2(&title);
-                // message.push_str(&format!("*{}*: [{}]({})\n",section_title, topic.title, topic.url));
-                new_topic_message.push(format!("*{}*: [{}]({})\n",section_title, title, topic.url));
-                self.pushed_urls.insert(topic.url.clone(), self.current_date.to_string());
-            }
+
+}
+
+
+/// 清洗获取的帖子内容，保留最新的部分
+pub async fn format_topics_message(
+    shared_item :&mut SharedItem,
+    section_title: &str,
+    current_date: &str,
+    topics: &[Topic],
+) -> Vec<String> {
+    // let mut message: String = format!("{}:\n", section_title);
+    // let mut message: String=String::new();
+    let mut new_topic_message=Vec::new();
+    for topic in topics {
+        if !shared_item.v2ex_pushed_urls.read().await.contains_key(&topic.url) {
+            let title=truncate_utf8(&topic.title, 4000);
+            let title=escape_markdown_v2(&title);
+            // message.push_str(&format!("*{}*: [{}]({})\n",section_title, topic.title, topic.url));
+            new_topic_message.push(format!("*{}*: [{}]({})\n",section_title, title, topic.url));
+            shared_item.v2ex_pushed_urls.write().await.insert(topic.url.clone(), current_date.to_string());
         }
-        new_topic_message
+    }
+    new_topic_message
+}
+
+/// 拉取最新贴并推送
+pub async fn fetch_latest_and_notify(
+    v2ex_client: &mut V2exClient, 
+    tg_client:&TgClient, 
+    shared_item:&mut SharedItem) -> io::Result<()> {
+    let topics=v2ex_client.fetch_latest_topics().await.unwrap();
+    let section_title="新贴推送";
+
+    let mut new_message_array=Vec::new();
+
+    if !topics.is_empty() {
+        new_message_array=format_topics_message(shared_item, section_title, v2ex_client.current_date(),&topics).await;
+        if new_message_array.is_empty(){
+            println!("暂无新贴")
+        }
     }
 
-
-    /// 拉取最新贴并推送
-    pub async fn fetch_latest_and_notify(&mut self) -> io::Result<()> {
-        let topics=self.fetch_latest_topics().await.unwrap();
-        let section_title="Latest topics";
-
-        let mut new_message_array=Vec::new();
-
-        if !topics.is_empty() {
-            write_topics_to_file(section_title, &topics,self.pushed_urls())?;
-            new_message_array=self.format_topics_message(section_title,&topics);
-            if new_message_array.is_empty(){
-                println!("暂无新贴")
-            }
+    if !new_message_array.is_empty()&&!*v2ex_client.is_latest_first() {
+        if let Err(err) = tg_client.send_batch_message(&new_message_array).await {
+            eprintln!("Failed to send Telegram message: {:?}", err);
         }
-
-        if !new_message_array.is_empty()&&!*self.is_latest_first() {
-            if let Err(err) = self.tg_client().send_batch_message(&new_message_array).await {
-                eprintln!("Failed to send Telegram message: {:?}", err);
-            }
-        }
-
-        // 开启推送
-        self.update_latest_to_second();
-
-        Ok(())
     }
 
+    // 开启推送
+    v2ex_client.update_latest_to_second();
 
-    /// 拉取最热贴并推送
-    pub async fn fetch_hotest_and_notify(&mut self) -> io::Result<()> {
-        let topics=self.fetch_hot_topics().await.unwrap();
-        let section_title="Hot topics";
+    Ok(())
+}
 
-        let mut new_message_array=Vec::new();
 
-        if !topics.is_empty() {
-            write_topics_to_file(section_title, &topics,self.pushed_urls())?;
-            new_message_array=self.format_topics_message(section_title,&topics);
-            if new_message_array.is_empty(){
-                println!("暂无新的热贴")
-            }
+/// 拉取最热贴并推送
+pub async fn fetch_hotest_and_notify(    
+    v2ex_client: &mut V2exClient, 
+    tg_client:&TgClient, 
+    shared_item:&mut SharedItem) -> io::Result<()> {
+    let topics=v2ex_client.fetch_hot_topics().await.unwrap();
+    let section_title="热帖推送";
+
+    let mut new_message_array=Vec::new();
+
+    if !topics.is_empty() {
+        new_message_array=format_topics_message(shared_item, section_title, v2ex_client.current_date(),&topics).await;
+        if new_message_array.is_empty(){
+            println!("暂无新贴")
         }
-
-        if !new_message_array.is_empty()&&!*self.is_hotest_first() {
-            if let Err(err) = self.tg_client().send_batch_message(&new_message_array).await {
-                eprintln!("Failed to send Telegram message: {:?}", err);
-            }
-        }
-
-        self.update_hotest_to_second();
-
-        Ok(())
     }
 
+    if !new_message_array.is_empty()&&!*v2ex_client.is_hotest_first() {
+        if let Err(err) = tg_client.send_batch_message(&new_message_array).await {
+            eprintln!("Failed to send Telegram message: {:?}", err);
+        }
+    }
 
+    v2ex_client.update_hotest_to_second();
+
+    Ok(())
 }
 

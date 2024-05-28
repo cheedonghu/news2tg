@@ -1,5 +1,6 @@
 use serde::Deserialize;
-use clap::Parser;
+use tokio::sync::RwLock;
+use std::collections::HashMap;
 
 /// v2ex响应结构
 #[derive(Deserialize, Debug)]
@@ -61,12 +62,17 @@ pub struct Topic {
 }
 
 
+/// 程序共享变量
+pub struct SharedItem{
+    pub v2ex_pushed_urls: RwLock<HashMap<String,String>>,
+    pub hackernews_pushed_urls: RwLock<HashMap<String,String>>
+}
 
-/// 你的程序的描述
-#[derive(Parser, Debug)]
-#[command(author = "east <cheedonghu@gmail.com>", version = "1.0", about = "Pull news and Push to telegram")]
-struct Args {
-    /// 设置配置文件路径
-    #[arg(short, long, value_name = "FILE")]
-    config: Option<String>,
+impl SharedItem {
+    pub fn new() -> SharedItem{
+        SharedItem{
+            v2ex_pushed_urls: RwLock::new(HashMap::new()),
+            hackernews_pushed_urls: RwLock::new(HashMap::new())
+        }
+    }
 }

@@ -16,11 +16,12 @@ impl TgClient {
         TgClient { bot, chat_id}
     }
 
+    /// tg推送，text限制在4096,内容需要转义
     pub async fn send_message(&self, text: &str) -> Result<(), teloxide::RequestError> {
-        let truncated_text=truncate_utf8(text, 4096);
+        // let truncated_text=truncate_utf8(text, 4096);
         // 转义特殊字符
-        let escaped_text=escape_markdown_v2(&truncated_text);
-        self.bot.send_message(self.chat_id, escaped_text)
+        // let escaped_text=escape_markdown_v2(&truncated_text);
+        self.bot.send_message(self.chat_id, text)
             .parse_mode(ParseMode::MarkdownV2)
             .send()
             .await?;

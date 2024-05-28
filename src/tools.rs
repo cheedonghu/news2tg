@@ -4,6 +4,8 @@ use std::io::{Write,Result};
 
 use crate::Topic;
 
+
+/// 以utf8格式进行字符分割
 pub fn truncate_utf8(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }

@@ -16,8 +16,9 @@ pub struct Cli {
 
 #[derive(Deserialize, Debug)]
 pub struct Features {
-    pub fetch_latest: bool,
-    pub fetch_hot: bool,
+    pub v2ex_fetch_latest: bool,
+    pub v2ex_fetch_hot: bool,
+    pub hn_fetch_top: bool,
 }
 
 
@@ -28,9 +29,15 @@ pub struct TelegramConfig {
 }
 
 #[derive(Deserialize, Debug)]
+pub struct DeepSeek {
+    pub api_token: String
+}
+
+#[derive(Deserialize, Debug)]
 pub struct Config {
     pub features: Features,
     pub telegram: TelegramConfig,
+    pub deepseek: DeepSeek
 }
 
 impl Config {

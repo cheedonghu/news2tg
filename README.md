@@ -15,17 +15,19 @@ api调用模块：reqwest
 
 IP池模块?:
 
-数据解析模块: serde
+JSON数据解析模块: serde
 
 数据推送模块：teloxide
 
 
 ### hacker news
 
-数据爬取模块：
+~~数据爬取模块： ~~ 改用api调用
+
+api调用模块：reqwest
 
 数据解析模块: 
 
-数据推送模块：
+JSON数据解析模块: serde
 
-AI交互模块：
+AI交互模块：todo 
