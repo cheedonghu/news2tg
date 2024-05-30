@@ -32,8 +32,9 @@ impl TgClient {
     pub async fn send_batch_message(&self, message_array: &Vec<String>) -> Result<(), teloxide::RequestError> {
         // 这里循环发可能触发tg限制 todo
         for message in message_array{
+            println!("{}",message);
             self.bot.send_message(self.chat_id, message)
-                .parse_mode(ParseMode::MarkdownV2)
+                .parse_mode(ParseMode::MarkdownV2).disable_web_page_preview(false)
                 .send()
                 .await?;
         }
@@ -72,10 +73,13 @@ mod tests{
         let new_runtime = Runtime::new()?;
         // 同步执行
         new_runtime.block_on(async {
-            let title=String::from("测试title.-");
+            let title=String::from("测试title");
             let mut message_arrary = Vec::new();
-            message_arrary.push(format!("*热帖推送*: [{}]({})\n", title, "luyublog.com"));
-            message_arrary.push(format!("*热帖推送*: [{}]({})\n", title, "luyublog.com"));
+            // message_arrary.push(format!("*热帖推送*: [{}]({})\n", title, "luyublog.com"));
+            // message_arrary.push(
+            //     format!("*Hacker News Top推送*: \n Comment Site:{}\n {}\n[{}]({})", "luyublog\\.com" , "AI总结: 待定","源内容: ", "https://www.theguardian.com/environment/article/2024/may/30/corporate-carbon-offsets-credits"));
+        
+            message_arrary.push(String::from("*Hacker News Top推送*: \n Comment Site:https://news\\.ycombinator\\.com/item?id\\=40522445\n AI总结: 待定\n[源内容: ](https://spyglass.org/movie-theaters-in-trouble/)"));
             
             tgclient.send_batch_message(&message_arrary).await.unwrap();
 

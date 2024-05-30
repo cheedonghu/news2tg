@@ -45,7 +45,12 @@ impl HackerNews{
         if let Some(element) = document.select(&selector).next() {
             if let Some(href) = element.value().attr("href") {
                 println!("Extracted URL: {}", href);
-                news_url=String::from(href);
+                // 要保证是http格式
+                if href.starts_with("http"){
+                    news_url=String::from(href);
+                }else{
+                    println!("Invalid href attribute found");
+                }
             } else {
                 println!("No href attribute found");
             }
@@ -101,7 +106,8 @@ pub async fn fetch_top_then_push(
     shared_item: &mut SharedItem) -> Result<(),Error>{
     let needed_pushed_message:Vec<String> =fetch_top(hacker_news,shared_item).await.unwrap();
     if needed_pushed_message.len()>0{
-        tg_client.send_batch_message(&needed_pushed_message);
+        // println!("{:?}",needed_pushed_message);
+        let _=tg_client.send_batch_message(&needed_pushed_message).await;
     }else{
         println!("[hacker news] 暂无新帖")
     }
@@ -113,7 +119,11 @@ pub async fn fetch_top(
     shared_item: &mut SharedItem) -> Result<Vec<String>,Error>{
     let mut needed_pushed_message: Vec<String>=Vec::new();
     // 最新id数组
-    let id_array=hacker_news.get_hacker_news_top_info().await.unwrap();
+    let mut id_array:Vec<String>=Vec::new();
+    match hacker_news.get_hacker_news_top_info().await {
+        Ok(res)=>id_array=res,
+        _=>return Ok(id_array)
+    }
 
     // 拿出前10的id
     let truncated_id: Vec<String>=id_array.iter().take(10).cloned().collect();
@@ -141,8 +151,15 @@ pub async fn fetch_top(
                 // ai总结：1. 获取源信息url 2.获取url链接内容 3.发送给大模型进行总结
                 let origin_news_url=hacker_news.get_news_origin_url(&url).await.unwrap();
 
-                // 格式化消息
-                needed_pushed_message.push(format!("[*{}*:]\n{}\n [{}]({})","Hacker News推送", url , "AI总结待定，源内容:", origin_news_url));
+                if !origin_news_url.is_empty(){
+                    // 格式化消息
+                    needed_pushed_message.push(
+                        format!("*Hacker News Top推送*: \n Comment Site:{}\n {}\n[{}]({})\n", tools::escape_markdown_v2(&url) , "AI总结: 待定","源内容: ", &origin_news_url));   
+                } else{
+                    needed_pushed_message.push(
+                        format!("*Hacker News Top推送*: \n Comment Site:{}\n {}\n[{}]({})\n", tools::escape_markdown_v2(&url) , "AI总结: 待定","源内容: ", &url));
+                }
+                println!("{}",needed_pushed_message.last().unwrap());
             }
         }
     }
