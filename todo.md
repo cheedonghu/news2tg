@@ -2,10 +2,25 @@
 
 ### hacker news的AI总结用哪个大模型？
 
-- 支持web搜索的?
+- 支持web搜索的?贵
 
-- 普通的?
+用deepseek，便宜，方便注册，兼容openai
 
+### 网页可能是视频，这总结个p阿？ 咋识别？
+
+### 拿到的网页内容太多一次性post发送不了？
+
+- 用文件的形式上传
+    api不支持
+
+- embedding后上传
+    api不支持
+
+- stream流式传输？
+    扯蛋
+
+- 精简内容
+    
 
 
 
@@ -24,4 +39,5 @@ Failed to send Telegram message: Api(Unknown("Bad Request: can't parse entities:
 
 ## memo
 1. 注意let mut shared_item1 = SharedItem::new(); 和 let shared_item2 = &mut SharedItem::new();的区别；
-2. 
+2. vscode 的debug真的难用
+3. rustrover笨重, debug下环境变量没法设置就走不了代理，难受

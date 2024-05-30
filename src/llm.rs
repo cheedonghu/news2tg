@@ -1,7 +1,9 @@
 use openai_dive::v1::api::Client;
+use openai_dive::v1::endpoints::chat::Chat;
 use openai_dive::v1::models::Gpt4Engine;
 use openai_dive::v1::resources::chat::{ChatCompletionParameters, ChatMessage, Role,ChatMessageContent};
 // use reqwest::Client;
+use futures::StreamExt;
 
 pub struct AIClient{
     ai_client: Client
@@ -9,12 +11,6 @@ pub struct AIClient{
 
 impl AIClient{
     pub fn new(api_key:&str) -> Self{
-        // let api_key = api_key;
-        // let config = OpenAIConfig::new()
-        //     .with_api_base("https://api.deepseek.com/chat")
-        //     .with_api_key(api_key)
-        //     .with_org_id("the-continental");
-        
 
         let http_client= reqwest::Client::builder().build().unwrap();
 
@@ -26,15 +22,17 @@ impl AIClient{
             project: None
         };
 
-
-
         AIClient{ai_client:client}
     }
 
 
     /// 利用大模型总结目标内容
     pub async fn summarize(&self, content:&str)->Result<String,()>{
-        // let answer;
+        // 字符数超过3w就不用调用大模型总结了，上下文不够
+        if content.len()>30000 {
+            let result=String::from(format!("字符数为{}，超过32k的上下文窗口，等待api支持embedding功能",content.len()));
+            return Ok(result)
+        }
 
         let parameters = ChatCompletionParameters {
             model: "deepseek-chat".to_string(),
@@ -49,19 +47,28 @@ impl AIClient{
             ..Default::default()
         };
     
-        let result = self.ai_client.chat().create(parameters).await.unwrap();
-    
-        // println!("{:#?}", result);
+        let llm_response = self.ai_client.chat().create(parameters).await;
 
-        let summary=match &result.choices.first().unwrap().message.content{
-            ChatMessageContent::Text(text) => {
-                text.clone()
-            },
-            _ => String::from("大模型返回异常")
-        };
-        
+        if cfg!(debug_assertions) {
+            println!("{:#?}", llm_response);
+        }
 
-        Ok(summary)
+        let result;
+        match llm_response {
+            Ok(result_str)=>{
+                match &result_str.choices.first().unwrap().message.content{
+                    ChatMessageContent::Text(text) => {
+                        result=text.clone()
+                    },
+                    _ => result=String::from("大模型返回非String内容")
+                };
+            }
+            _ =>{
+                result=String::from("大模型返回异常")
+            }
+        }
+
+        Ok(result)
     }
 
 }
@@ -74,27 +81,19 @@ mod tests{
 
     use super::*;
     use crate::config::Config;
-    use crate::models::*;
-    use crate::tgclient::*;
-    use crate::v2ex_client::*;
+
     use crate::llm::AIClient;
     use tokio;
-    use reqwest::Client;
-    use tokio::time::Duration;
-    use teloxide::prelude::*;
-    use chrono::prelude::*;
-    use chrono::Duration as ChronoDuration;
-    use clap::Parser;
     use tokio::runtime::Runtime;
     use std::fs::File;
-    use std::io::Write;
+    use std::io::Read;
 
 
 
     #[test]
     fn test_llm() -> Result<(), Box<dyn Error>>{
         let config = Config::from_file("config.toml");
-        let mut base_date = Utc::now().format("%Y%m%d").to_string();
+        // let mut base_date = Utc::now().format("%Y%m%d").to_string();
         // let bot = Bot::new(&config.telegram.api_token);
         // let chat_id = ChatId(config.telegram.chat_id.parse::<i64>().expect("Invalid chat ID"));
         let ai_client=&AIClient::new(&config.deepseek.api_token);
@@ -104,10 +103,16 @@ mod tests{
         // 同步执行
         new_runtime.block_on(async {
 
-            let origin_news_content="
-            西风酒旗市，细雨菊花天。
-            ";
-            let summary=ai_client.summarize(origin_news_content).await.unwrap();
+            // let origin_news_content="
+            // 西风酒旗市，细雨菊花天。
+            // ";
+
+            let mut file = File::open("./output.html").unwrap();
+            let mut origin_news_content: String=String::new();
+            file.read_to_string(&mut origin_news_content).unwrap();
+    // 
+
+            let summary=ai_client.summarize(&origin_news_content).await.unwrap();
             println!("{}", &summary);
 
         });

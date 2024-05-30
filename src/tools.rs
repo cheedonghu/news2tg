@@ -1,6 +1,11 @@
 use std::fs::File;
 use std::collections::HashMap;
-use std::io::{Write,Result};
+use std::io::{Write,Result,Read};
+use regex::Regex;
+use minifier::{css, js};
+use scraper::{Html, Selector};
+
+
 
 use crate::Topic;
 
@@ -46,4 +51,138 @@ pub fn write_topics_to_file(section_title: &str, topics: &[Topic], pushed_urls: 
         }
     }
     Ok(())
+}
+
+pub fn truncate_html_old(string: &str) -> Result<String> {
+    // Read the HTML file content
+    // let mut file = File::open("./output.txt")?;
+    let mut content = String::from(string);
+    // file.read_to_string(&mut content)?;
+
+    // Remove HTML comments
+    let re_comments = Regex::new(r"(?s)<!--.*?-->").unwrap();
+    content = re_comments.replace_all(&content, "").to_string();
+
+    // Minify inline CSS
+    let re_css = Regex::new(r"<style>(.*?)</style>").unwrap();
+    content = re_css.replace_all(&content, |caps: &regex::Captures| {
+        match css::minify(&caps[1]) {
+            Ok(minified_css) => format!("<style>{}</style>", minified_css),
+            Err(e) => {
+                eprintln!("Error minifying CSS: {}", e);
+                format!("<style>{}</style>", &caps[1]) // Return original CSS on error
+            }
+        }
+    }).to_string();
+
+    // Minify inline JavaScript
+    let re_js = Regex::new(r"<script>(.*?)</script>").unwrap();
+    content = re_js.replace_all(&content, |caps: &regex::Captures| {
+        format!("<script>{}</script>", js::minify(&caps[1].to_string()))
+    }).to_string();
+
+    // Minify HTML (remove redundant whitespaces between tags)
+    let re_html = Regex::new(r">\s+<").unwrap();
+    content = re_html.replace_all(&content, "><").to_string();
+
+    // Save the modified content back to a file
+    if cfg!(debug_assertions) {
+        let mut output = File::create("output.html")?;
+        output.write_all(&content.as_bytes())?;
+    }
+    // let mut output = File::create("output.html")?;
+    // output.write_all(content.as_bytes())?;
+
+    Ok(content)
+}
+
+/// 优化html内容减少token数
+pub fn truncate_html(string: &str) -> Result<String> {
+    // Read the HTML file content
+    // let mut file = File::open("./output.txt")?;
+    let mut content = String::from(string);
+    if cfg!(debug_assertions) {
+        let mut output = File::create("output.txt")?;
+        output.write_all(&content.as_bytes())?;
+    }
+    // let mut content=String::new();
+    // file.read_to_string(&mut content);
+
+    // Remove HTML comments
+    let re_comments = Regex::new(r"(?s)<!--.*?-->").unwrap();
+    content = re_comments.replace_all(&content, "").to_string();
+
+    // Minify inline CSS
+    let re_css = Regex::new(r"<style>(.*?)</style>").unwrap();
+    content = re_css.replace_all(&content, |caps: &regex::Captures| {
+        match css::minify(&caps[1]) {
+            Ok(minified_css) => format!("<style>{}</style>", minified_css),
+            Err(e) => {
+                eprintln!("Error minifying CSS: {}", e);
+                format!("<style>{}</style>", &caps[1]) // Return original CSS on error
+            }
+        }
+    }).to_string();
+
+    // Minify inline JavaScript
+    let re_js = Regex::new(r"<script>(.*?)</script>").unwrap();
+    content = re_js.replace_all(&content, |caps: &regex::Captures| {
+        format!("<script>{}</script>", js::minify(&caps[1].to_string()))
+    }).to_string();
+
+    // Minify HTML (remove redundant whitespaces between tags)
+    let re_html = Regex::new(r">\s+<").unwrap();
+    content = re_html.replace_all(&content, "><").to_string();
+
+    // Save the modified content back to a file
+    if cfg!(debug_assertions) {
+        let mut output = File::create("output.html")?;
+        output.write_all(&content.as_bytes())?;
+    }
+    // let mut output = File::create("output.html")?;
+    // output.write_all(content.as_bytes())?;
+
+    // 创建选择器以选取文档中的所有文本节点
+    let selector = Selector::parse("*").unwrap();
+    let mut text_content = String::new();
+    let document = Html::parse_document(&content);
+
+
+    // 遍历每个元素，提取其文本
+    for element in document.select(&selector) {
+        if let Some(text) = element.text().next() {
+            let cleaned_text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !cleaned_text.is_empty() {
+                text_content.push_str(&cleaned_text);
+                text_content.push(' ');  // 添加空格以保持单词间隔
+            }
+        }
+    }
+
+    // 输出或保存提取后的文本
+    if cfg!(debug_assertions) {
+        let mut output = File::create("output.html")?;
+        output.write_all(&text_content.as_bytes())?;
+    }
+
+    Ok(text_content)
+}
+
+
+
+#[cfg(test)]
+mod tests{
+
+    // use super::*;
+    use std::io::Result;
+    // use std::fs::File;
+    use crate::tools::*;
+
+
+
+    #[test]
+    fn test_truncate_html() -> Result<()>{
+        truncate_html("123");
+        Ok(())
+    }
 }

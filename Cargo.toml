@@ -14,3 +14,7 @@ tokio-util = { version = "0.6", features = ["full"] }
 teloxide = "0.12.2"
 chrono = "0.4.38"
 openai_dive = "0.4.8"
+futures = "0.3"
+regex = "1"
+minifier = "0.0.41"
+# langchain-rust = {version = "4.1.4", features = ["sqlite"] }

@@ -140,7 +140,7 @@ pub async fn fetch_hotest_and_notify(
     if !topics.is_empty() {
         new_message_array=format_topics_message(shared_item, section_title, v2ex_client.current_date(),&topics).await;
         if new_message_array.is_empty(){
-            println!("暂无新贴")
+            println!("[v2ex] 暂无新贴")
         }
     }
 

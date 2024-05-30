@@ -8,9 +8,6 @@ hacker news: 包含帖子推送和AI总结
 ## 架构
 
 ### v2ex
-
-~~数据爬取模块：~~ 改用api调用
-
 api调用模块：reqwest
 
 IP池模块?:
@@ -22,12 +19,8 @@ JSON数据解析模块: serde
 
 ### hacker news
 
-~~数据爬取模块： ~~ 改用api调用
-
 api调用模块：reqwest
-
-数据解析模块: 
 
 JSON数据解析模块: serde
 
-AI交互模块：todo 
+AI交互模块：openai_dive
