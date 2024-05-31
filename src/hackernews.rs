@@ -126,7 +126,7 @@ pub async fn fetch_top(
     }
 
     // 拿出前10的id
-    let truncated_id: Vec<String>=id_array.iter().take(10).cloned().collect();
+    let truncated_id: Vec<String>=id_array.iter().take(3).cloned().collect();
 
     // 将新出现的保存并推送
     let current_date=hacker_news.current_date().to_string();
@@ -166,6 +166,8 @@ pub async fn fetch_top(
     Ok(needed_pushed_message)
 }
 
+
+/// deprecated
 pub async fn fetch_top_then_summarize_then_push(
     hacker_news: &mut HackerNews,
     tg_client: &TgClient,

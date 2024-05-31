@@ -1,8 +1,7 @@
 use teloxide::prelude::*;
 use teloxide::types::ParseMode;
 use tokio::runtime::Runtime;
-use std::error::Error;
-
+use tokio::time::{Duration, sleep};
 use crate::tools::*;
 
 
@@ -33,10 +32,14 @@ impl TgClient {
         // 这里循环发可能触发tg限制 todo
         for message in message_array{
             println!("{}",message);
+            // 不显示预览： 1.网页元数据问题 2.频率太快？
             self.bot.send_message(self.chat_id, message)
                 .parse_mode(ParseMode::MarkdownV2).disable_web_page_preview(false)
                 .send()
                 .await?;
+
+            // 停顿1.5s防止预览不显示
+            sleep(Duration::from_millis(1500)).await;
         }
         Ok(())
     }
@@ -76,10 +79,19 @@ mod tests{
             let title=String::from("测试title");
             let mut message_arrary = Vec::new();
             // message_arrary.push(format!("*热帖推送*: [{}]({})\n", title, "luyublog.com"));
+            message_arrary.push(String::from(
+                r"*Hacker News Top推送*: 
+                Comment Site: https://news\.ycombinator\.com/item?id\=40530365
+                AI总结: 待定
+               [源内容: ](https://vickiboykis.com/2024/05/20/dont-worry-about-llms/)"));
+
+
             // message_arrary.push(
-            //     format!("*Hacker News Top推送*: \n Comment Site:{}\n {}\n[{}]({})", "luyublog\\.com" , "AI总结: 待定","源内容: ", "https://www.theguardian.com/environment/article/2024/may/30/corporate-carbon-offsets-credits"));
+            //     format!("*Hacker News Top推送*: \n Comment Site:{}\n {}\n[{}]({})", "luyublog\\.com" , "AI总结: 待定","源内容: ", "https://greptime.com/blogs/2024-05-21-fault-tolerance"));
         
-            message_arrary.push(String::from("*Hacker News Top推送*: \n Comment Site:https://news\\.ycombinator\\.com/item?id\\=40522445\n AI总结: 待定\n[源内容: ](https://spyglass.org/movie-theaters-in-trouble/)"));
+
+            // message_arrary.push(String::from(r"*热帖推送*: [title](luyublog.com)"));
+            
             
             tgclient.send_batch_message(&message_arrary).await.unwrap();
 
