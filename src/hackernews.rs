@@ -13,13 +13,14 @@ use crate::tools::truncate_utf8;
 pub struct HackerNews{
     client: Client,
     current_date: String,
+    top_num: usize,
     push_enabled: bool
 }
 
 impl HackerNews{
 
-    pub fn new(client: Client,current_date: String) -> Self{
-        HackerNews{client, current_date,push_enabled:false}
+    pub fn new(client: Client,current_date: String, top_num: usize) -> Self{
+        HackerNews{client, current_date,top_num,push_enabled:false}
     }
 
     /// 打开推送开关
@@ -93,6 +94,7 @@ create_getters!(
     HackerNews,
     client: Client,
     current_date: String,
+    top_num: usize,
     push_enabled: bool
 );
 
@@ -126,7 +128,7 @@ pub async fn fetch_top(
     }
 
     // 拿出前10的id
-    let truncated_id: Vec<String>=id_array.iter().take(3).cloned().collect();
+    let truncated_id: Vec<String>=id_array.iter().take(hacker_news.top_num().clone()).cloned().collect();
 
     // 将新出现的保存并推送
     let current_date=hacker_news.current_date().to_string();
@@ -262,7 +264,7 @@ mod tests{
         // // 创建一个 HTTPS 代理
         let https_proxy = Proxy::https("http://127.0.0.1:5353")?;
         let client=Client::builder().proxy(http_proxy).proxy(https_proxy).build()?;
-        let mut hackernews_client=HackerNews::new(client, base_date.clone());
+        let mut hackernews_client=HackerNews::new(client, base_date.clone(),3);
         let ai_client=AIClient::new(&config.deepseek.api_token);
         let mut shared_item=SharedItem::new();
 
@@ -289,7 +291,7 @@ mod tests{
         // 创建一个 HTTPS 代理
         let https_proxy = Proxy::https("http://127.0.0.1:5353")?;
         let client=Client::builder().proxy(http_proxy).proxy(https_proxy).build()?;
-        let hackernews_client=HackerNews::new(client, base_date.clone());
+        let hackernews_client=HackerNews::new(client, base_date.clone(),3);
         let ai_client=AIClient::new(&config.deepseek.api_token);
         let mut shared_item=SharedItem::new();
 

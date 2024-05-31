@@ -19,6 +19,7 @@ pub struct Features {
     pub v2ex_fetch_latest: bool,
     pub v2ex_fetch_hot: bool,
     pub hn_fetch_top: bool,
+    pub hn_fetch_num: usize,
 }
 
 

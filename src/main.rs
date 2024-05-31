@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut base_date = Utc::now().format("%Y%m%d").to_string();
     let tg_client=TgClient::new(bot, chat_id);
     let mut v2ex_client=V2exClient::new(Client::new(), base_date.clone());
-    let mut hackernews_client=HackerNews::new(Client::new(), base_date.clone());
+    let mut hackernews_client=HackerNews::new(Client::new(), base_date.clone(),config.features.hn_fetch_num);
     let ai_client=AIClient::new(&config.deepseek.api_token);
     let mut shared_item=SharedItem::new();
 
