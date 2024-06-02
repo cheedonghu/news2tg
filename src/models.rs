@@ -1,6 +1,23 @@
 use serde::Deserialize;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
+use std::error::Error;
+use std::fmt::{Display,Formatter,Result};
+
+/// 自定义错误
+#[derive(Debug)]
+pub struct MyError {
+    pub message: String,
+}
+
+impl Display for MyError {
+    fn fmt(&self, f: &mut Formatter) -> Result {
+        write!(f, "Custom Error: {}", self.message)
+    }
+}
+
+impl Error for MyError {}
+
 
 /// v2ex响应结构
 #[derive(Deserialize, Debug)]
@@ -76,3 +93,4 @@ impl SharedItem {
         }
     }
 }
+
