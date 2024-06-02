@@ -1,8 +1,12 @@
 [telegram]
-api_token = "your_bot_api_token"
-chat_id = "your_chat_id"
+api_token = "token"
+chat_id = "id"
 
 [features]
-fetch_latest = false
-fetch_hot = true
-test = true
+v2ex_fetch_latest = false
+v2ex_fetch_hot = true
+hn_fetch_top = true
+hn_fetch_num = 5
+
+[deepseek]
+api_token="key"
