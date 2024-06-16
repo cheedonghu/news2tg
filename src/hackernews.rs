@@ -39,37 +39,33 @@ impl HackerNews{
     }
 
     
-
-    /// 判断创建日期是否是一天前
+    /// 从网页里面判断发帖时间
     pub async fn judge_news_date(&self, response:&str) -> Result<(),Box<dyn Error>>{
-        // let response=self.client.get(url).send().await?.text().await?;
         // Parse the HTML
         let document = Html::parse_document(response);
-        let selector = Selector::parse("span.age").unwrap();
+        let selector = Selector::parse("tbody tr td.subtext span.age").unwrap();
 
-        // 提取时间
-        let mut title_time= String::new();
-        if let Some(element) = document.select(&selector).next() {
-            if let Some(time_value) = element.value().attr("title") {
-                title_time=String::from(time_value);
-                // 解析失败的设置个默认最大值时间: -> 不推送
-                let current_date=NaiveDate::parse_from_str(&self.current_date(), "%Y%m%d").unwrap();
-                // 解析时间, 转换成：原时间+1天 
-                let adjusted_date=NaiveDate::parse_from_str(time_value, "%Y-%m-%dT%H:%M:%S").unwrap_or(current_date.clone()).
-                checked_add_signed(ChronoDuration::days(1)).unwrap();
-                // 转换后时间<=当前时间
-                
-                match adjusted_date.cmp(&current_date){
-                    Ordering::Greater=> {},
-                    _=> return Ok(())
-                }
+        // document.select(&selector)
+        let mut title_time:Option<String>=None;
+        for element in document.select(&selector) {
+            let text = element.text().collect::<Vec<_>>().join(" ");
+            // if cfg!(debug_assertions) {
+            //     println!("{}", &text);
+            // }
+
+            //单位是hour，数字要大于指定数字
+            let text_vec: Vec<&str>=text.split(' ').collect();
+            if text_vec.len()==3 && text_vec.get(1).expect("单位获取失败").eq_ignore_ascii_case("hours") && text_vec.get(0).unwrap().parse::<i32>().expect("数字部分转换失败")>8{
+                return Ok(())
             }
+            title_time=Some(text);
         }
 
         Err(Box::new(MyError {
-            message: format!("帖子日期: {} 不符合推送要求",title_time.to_string()),
+            message: format!("帖子日期: {} 不符合推送要求",title_time.unwrap_or(String::from("获取失败"))),
         }))
     }
+
     
     /// 从hacker news的comment页面中提取出源网址： 在titleline的href内
     pub async fn get_news_origin_url(&self, response:&str) -> Result<String,Box<dyn Error>>{
@@ -100,38 +96,34 @@ impl HackerNews{
         Ok(news_url)
     }
     
-    /// 从hacker news的comment页面中提取出源网址： 在titleline的href内
-    pub async fn get_news_origin_url_old(&self, url:&str) -> Result<String,Box<dyn Error>>{
-        let mut news_url: String=String::new();
-
-        let response=self.client.get(url).send().await?.text().await?;
-        // Parse the HTML
-        let document = Html::parse_document(&response);
-        let selector = Selector::parse("span.titleline a").unwrap();
-
-        // Extract the link
-        if let Some(element) = document.select(&selector).next() {
-            if let Some(href) = element.value().attr("href") {
-                println!("Extracted URL: {}", href);
-                // 要保证是http格式
-                if href.starts_with("http"){
-                    news_url=String::from(href);
-                }else{
-                    println!("Invalid href attribute found");
-                }
-            } else {
-                println!("No href attribute found");
-            }
-        } else {
-            println!("No matching elements found");
-        }
-        
-        Ok(news_url)
-    }
 
     /// 调用hacker news的top分类接口
     async fn get_hacker_news_top_info(&self) -> Result<Vec<String>,Box<dyn Error>>{
+        let url = "https://hacker-news.firebaseio.com/v0/topstories.json?print=pretty";
+        let response = self.client.get(url).send().await?.json::<Vec<u64>>().await?;
+
+        let string_array: Vec<String> = response.iter()
+            .map(|&i| i.to_string())
+            .collect();
+
+        Ok(string_array)
+    }
+
+    /// 调用hacker news的newest分类接口
+    async fn get_hacker_news_new_info(&self) -> Result<Vec<String>,Box<dyn Error>>{
         let url = "https://hacker-news.firebaseio.com/v0/newstories.json?print=pretty";
+        let response = self.client.get(url).send().await?.json::<Vec<u64>>().await?;
+
+        let string_array: Vec<String> = response.iter()
+            .map(|&i| i.to_string())
+            .collect();
+
+        Ok(string_array)
+    }
+
+    /// 调用hacker news的best分类接口
+    async fn get_hacker_news_best_info(&self) -> Result<Vec<String>,Box<dyn Error>>{
+        let url = "https://hacker-news.firebaseio.com/v0/beststories.json?print=pretty";
         let response = self.client.get(url).send().await?.json::<Vec<u64>>().await?;
 
         let string_array: Vec<String> = response.iter()
@@ -220,10 +212,15 @@ pub async fn fetch_top(
             let url=format!("https://news.ycombinator.com/item?id={}",&id);
             let response=hacker_news.client().get(url.clone()).send().await?.text().await?;
 
-            // 仅创建于一天前的才继续解析推送否则推送频率太高
-            if let Err(_) = hacker_news.judge_news_date(&response).await{
+            // 仅创建时间不算短的才继续解析推送否则推送频率太高
+            match hacker_news.judge_news_date(&response).await {
+                // 没问题则进行后续解析
+                Ok(_) => {},
                 // 不满足要求，当前url跳过
-                continue;
+                Err(err) => {
+                    println!("{}",err);
+                    continue;
+                }
             }
 
             // 过滤完成，推送保存
@@ -335,8 +332,33 @@ mod tests{
     
 
     #[test]
+    fn test_parse() -> Result<(), Box<dyn Error>>{
+
+        let http_proxy = Proxy::http("http://127.0.0.1:5353")?;
+        // // 创建一个 HTTPS 代理
+        let https_proxy = Proxy::https("http://127.0.0.1:5353")?;
+        let client=Client::builder().proxy(http_proxy).proxy(https_proxy).build()?;
+        let mut hackernews_client=HackerNews::new(client, String::from("20240616"),3);
+
+        let new_runtime = Runtime::new()?;
+        // 同步执行
+        new_runtime.block_on(async {
+            hackernews_client.enable_push();
+            
+            let url="https://news.ycombinator.com/item?id=40694254";
+            let response=hackernews_client.client().get(url).send().await.unwrap().text().await.unwrap();
+            
+            match hackernews_client.judge_news_date(&response).await {
+                Ok(_) => {},
+                Err(err) => println!("{:#?}",err)
+            }
+        });
+        Ok(())
+    }
+    
+    #[test]
     fn test_push() -> Result<(), Box<dyn Error>>{
-        let config = Config::from_file("config.toml");
+        let config = Config::from_file("myconfig.toml");
         let mut base_date = Utc::now().format("%Y%m%d").to_string();
         let bot = Bot::new(&config.telegram.api_token);
         let chat_id = ChatId(config.telegram.chat_id.parse::<i64>().expect("Invalid chat ID"));
