@@ -3,6 +3,10 @@ name = "news2tg"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name="client"
+path="src/bin/client.rs"
+
 [dependencies]
 reqwest = "0.12.4"
 scraper = "0.19"
@@ -15,6 +19,17 @@ teloxide = "0.12.2"
 chrono = "0.4.38"
 openai_dive = "0.4.8"
 futures = "0.3"
-regex = "1"
+regex = "1.5.4"
 minifier = "0.0.41"
+tonic = "0.12.1"
+prost = "0.13.1"
+
+# lazy_static = "1.4"
+# lru = "0.12"
+# url = "2.2"
+# cached = "0.28.0"
+# kuchikiki = "0.8.2"
 # langchain-rust = {version = "4.1.4", features = ["sqlite"] }
+
+[build-dependencies]
+tonic-build = "0.12.1"

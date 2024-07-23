@@ -1,16 +1,20 @@
+// #[macro_use]
+// extern crate lazy_static;
+
+mod html;
+mod tools;
 mod models;
 mod v2ex_client;
 mod config;
 mod tgclient;
-mod tools;
-mod hackernews;
 mod llm;
+mod hackernews;
+mod grpc;
 
 use config::*;
 use hackernews::HackerNews;
 use llm::AIClient;
 use models::SharedItem;
-use models::Topic;
 use tgclient::TgClient;
 use tokio;
 use reqwest::Client;

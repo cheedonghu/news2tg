@@ -206,6 +206,7 @@ pub async fn fetch_top(
         for id in truncated_id{
             if pushed_urls.read().await.contains_key(&id){
                 // 已推送的不处理
+                println!("当前id:{} 已推送", id);
                 continue;
             }
             // 新出现的

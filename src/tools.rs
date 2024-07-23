@@ -1,14 +1,14 @@
 use std::fs::File;
-use std::collections::HashMap;
 use std::io::{Write,Result,Read};
 use chrono::DateTime;
 use regex::Regex;
 use minifier::{css, js};
 use scraper::{Html, Selector};
+use std::collections::{HashSet,HashMap};
+use cached::proc_macro::cached;
 
 
-
-use crate::Topic;
+use crate::models::Topic;
 
 
 /// 以utf8格式进行字符分割
@@ -167,6 +167,53 @@ pub fn truncate_html(string: &str) -> Result<String> {
     }
 
     Ok(text_content)
+}
+
+
+pub fn tokenize(s: &str) -> Vec<String> {
+    let ascii_patt = Regex::new(r"([\x00-\xFF]+)").unwrap();
+    let mut tokens = Vec::new();
+    for token in ascii_patt.split(s.trim()) {
+        if !token.is_empty() {
+            if ascii_patt.is_match(token) {
+                tokens.extend(token.split_whitespace().map(|t| format!("{} ", t)));
+            } else {
+                tokens.extend(token.chars().map(|c| c.to_string()));
+            }
+        }
+    }
+    tokens
+}
+
+// #[cached(size = 32)]
+pub fn cached_tokenize(s: &str) -> Vec<String> {
+    tokenize(s)
+}
+
+#[cached(size = 128)]
+pub fn lcs_length(x: Vec<String>, y: Vec<String>) -> usize {
+    let (len_x, len_y) = (x.len() + 1, y.len() + 1);
+    let mut lcs = vec![vec![0; len_y]; len_x];
+    for i in 1..len_x {
+        for j in 1..len_y {
+            lcs[i][j] = if x[i - 1] == y[j - 1] {
+                lcs[i - 1][j - 1] + 1
+            } else {
+                usize::max(lcs[i - 1][j], lcs[i][j - 1])
+            };
+        }
+    }
+    lcs[len_x - 1][len_y - 1]
+}
+
+#[cached(size = 128)]
+pub fn string_inclusion_ratio(needle: String, haystack: String) -> f64 {
+    let needle_tokens = cached_tokenize(&needle);
+    let haystack_tokens = cached_tokenize(&haystack);
+    if needle_tokens.is_empty() || haystack_tokens.is_empty() {
+        return 0.0;
+    }
+    lcs_length(needle_tokens, haystack_tokens) as f64 / cached_tokenize(&needle).len() as f64
 }
 
 

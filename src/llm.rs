@@ -26,7 +26,8 @@ impl AIClient{
     }
 
 
-    /// 利用大模型总结目标内容
+    /// 利用大模型总结目标内容 
+    /// 参考：https://blog.betacat.io/post/2023/06/summarize-hacker-news-by-chatgpt/
     pub async fn summarize(&self, content:&str)->Result<String,()>{
         // 字符数超过3w就不用调用大模型总结了，上下文不够
         if content.len()>30000 {

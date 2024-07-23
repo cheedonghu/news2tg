@@ -1,5 +1,7 @@
 ## TODO
 
+### 加个hostloc热帖
+
 ### 增加个日志文件保存功能
 
 ### hacker news的AI总结用哪个大模型？
@@ -8,7 +10,6 @@
 
 用deepseek，便宜，方便注册，兼容openai
 
-### 为什么test的时候发送的链接可以预览，正常发送不行？
 
 ### 网页可能是视频，这总结个p阿？ 咋识别？
 
@@ -40,6 +41,8 @@ Failed to send Telegram message: Api(Unknown("Bad Request: can't parse entities:
     没啥好办法，暂时直接发，我只收集热帖
 
 
+### 为什么test的时候发送的链接可以预览，正常发送不行？
+    暂时不管
 
 ## memo
 1. 注意let mut shared_item1 = SharedItem::new(); 和 let shared_item2 = &mut SharedItem::new();的区别；

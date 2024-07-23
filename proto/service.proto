@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package myservice;
+
+service MyService {
+  rpc RemoteFunction (ServiceRequest) returns (ServiceResponse) {}
+}
+
+message ServiceRequest {
+  string input = 1;
+}
+
+message ServiceResponse {
+  string output = 1;
+}
