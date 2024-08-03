@@ -1,9 +1,11 @@
+use log::info;
 use openai_dive::v1::api::Client;
 use openai_dive::v1::endpoints::chat::Chat;
 use openai_dive::v1::models::Gpt4Engine;
 use openai_dive::v1::resources::chat::{ChatCompletionParameters, ChatMessage, Role,ChatMessageContent};
 // use reqwest::Client;
 use futures::StreamExt;
+use chrono::Local;
 
 pub struct AIClient{
     ai_client: Client
@@ -29,6 +31,7 @@ impl AIClient{
     /// 利用大模型总结目标内容 
     /// 参考：https://blog.betacat.io/post/2023/06/summarize-hacker-news-by-chatgpt/
     pub async fn summarize(&self, content:&str)->Result<String,()>{
+        println!("{} 利用大模型将内容转为中文", Local::now().format("%Y年%m月%d日 %H:%M:%S"));
         // 字符数超过3w就不用调用大模型总结了，上下文不够
         if content.len()>30000 {
             let result=String::from(format!("字符数为{}，超过32k的上下文窗口，等待api支持embedding功能",content.len()));
@@ -52,6 +55,7 @@ impl AIClient{
 
         if cfg!(debug_assertions) {
             println!("{:#?}", llm_response);
+            // info!("{:#?}", llm_response);
         }
 
         let result;
@@ -69,6 +73,7 @@ impl AIClient{
             }
         }
 
+        println!("{} 大模型翻译成功", Local::now().format("%Y年%m月%d日 %H:%M:%S"));
         Ok(result)
     }
 

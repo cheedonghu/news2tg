@@ -15,7 +15,7 @@ serde = { version = "1.0", features = ["derive"] }
 toml = "0.5"
 clap = { version = "4.5.4", features = ["derive"] }
 tokio-util = { version = "0.6", features = ["full"] }
-teloxide = "0.12.2"
+teloxide = { version = "0.12.2"}
 chrono = "0.4.38"
 openai_dive = "0.4.8"
 futures = "0.3"
@@ -23,7 +23,8 @@ regex = "1.5.4"
 minifier = "0.0.41"
 tonic = "0.12.1"
 prost = "0.13.1"
-
+log = { version = "0.4", features = ["max_level_error", "release_max_level_warn"] }
+flexi_logger = "0.28"
 # lazy_static = "1.4"
 # lru = "0.12"
 # url = "2.2"
