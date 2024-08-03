@@ -24,10 +24,10 @@ COPY --from=rust-builder /usr/src/news2tg/target/release/news2tg /app/news2tg
 RUN mkdir /config
 
 # 设置环境变量指向配置文件位置
-ENV RUST_CONFIG_PATH=/config/rust-config.toml
+ENV RUST_CONFIG_PATH=/config/config.toml
 
 # 暴露必要的端口（其实没必要暴露）
 EXPOSE 11000
 
 # 启动命令
-CMD ["sh", "-c", "python -m page_content_extractor.main & ./news2tg"]
+CMD ["sh", "-c", "python -m page_content_extractor.main & ./news2tg -c /config/config.toml"]
