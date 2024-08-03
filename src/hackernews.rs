@@ -24,35 +24,22 @@ use crate::models::MyError;
 
 pub struct HackerNews{
     pub http_client: Client,
-    // pub rpc_client: MyServiceClient<Channel>,
-    // pub llm_client: AIClient,
-    // pub tg_client:TgClient,
     pub current_date: String,
     pub top_num: usize,
-    // 推送的帖子要距今多久
-    pub time_gap: i32,
-    // 是否推送
-    pub push_enabled: bool
+    // 推送的帖子要距今多久(单位: H)
+    pub time_gap: i32
 }
 
 impl HackerNews{
 
     pub fn new(http_client: Client, 
-        // rpc_client: MyServiceClient<Channel>,
-        // llm_client: AIClient, 
-        // tg_client:TgClient,
         current_date: String, 
         top_num: usize, 
-        time_gap:i32,
-        push_enabled:bool) -> Self{
+        time_gap:i32) -> Self{
         HackerNews{http_client, 
-            // rpc_client, 
-            // llm_client, 
-            // tg_client,
             current_date, 
             top_num,
-            time_gap, 
-            push_enabled}
+            time_gap}
     }
 
     /// 更新当前时间
@@ -303,7 +290,7 @@ mod tests{
         // 新建ai客户端
         let ai_client=AIClient::new(&config.deepseek.api_token);
 
-        let mut hacker_news=HackerNews::new(http_client,base_date.clone(),1,0,true);
+        let mut hacker_news=HackerNews::new(http_client,base_date.clone(),1,0);
         let mut shared_item=SharedItem::new();
         hacker_news.process_top_news(&mut shared_item,&mut rpc_client,&ai_client,&tg_client).await?;
 

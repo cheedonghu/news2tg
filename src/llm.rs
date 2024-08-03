@@ -53,10 +53,10 @@ impl AIClient{
     
         let llm_response = self.ai_client.chat().create(parameters).await;
 
-        if cfg!(debug_assertions) {
-            println!("{:#?}", llm_response);
-            // info!("{:#?}", llm_response);
-        }
+        // if cfg!(debug_assertions) {
+        //     println!("{:#?}", llm_response);
+        //     // info!("{:#?}", llm_response);
+        // }
 
         let result;
         match llm_response {
