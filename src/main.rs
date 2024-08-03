@@ -76,8 +76,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             .await?;
     let mut rpc_client = MyServiceClient::new(channel);
     let ai_client=AIClient::new(&config.deepseek.api_token);
-    // 目标帖子暂设置为距今8h的
-    let mut hacker_news=HackerNews::new(Client::new(),base_date.clone(),8,0);
+    let mut hacker_news=HackerNews::new(Client::new(),base_date.clone(),config.features.hn_fetch_num,config.features.hn_fetch_time_gap);
     let mut shared_item=SharedItem::new();
     
     loop {

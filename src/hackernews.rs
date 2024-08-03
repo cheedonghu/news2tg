@@ -27,7 +27,7 @@ pub struct HackerNews{
     pub current_date: String,
     pub top_num: usize,
     // 推送的帖子要距今多久(单位: H)
-    pub time_gap: i32
+    pub time_gap: usize
 }
 
 impl HackerNews{
@@ -35,7 +35,7 @@ impl HackerNews{
     pub fn new(http_client: Client, 
         current_date: String, 
         top_num: usize, 
-        time_gap:i32) -> Self{
+        time_gap:usize) -> Self{
         HackerNews{http_client, 
             current_date, 
             top_num,
@@ -49,7 +49,7 @@ impl HackerNews{
 
     
     /// 从网页里面判断发帖时间
-    fn judge_news_date(&self, response:&str, time_gap:i32) -> bool{
+    fn judge_news_date(&self, response:&str, time_gap:usize) -> bool{
         println!("{} 开始判断帖子日期是否在范围内", Local::now().format("%Y年%m月%d日 %H:%M:%S"));
         // Parse the HTML
         let document = Html::parse_document(response);
@@ -65,7 +65,7 @@ impl HackerNews{
 
             //单位是hour，数字要大于指定数字
             let text_vec: Vec<&str>=text.split(' ').collect();
-            if text_vec.len()==3 && text_vec.get(1).expect("单位获取失败").eq_ignore_ascii_case("hours") && text_vec.get(0).unwrap().parse::<i32>().expect("数字部分转换失败")>time_gap{
+            if text_vec.len()==3 && text_vec.get(1).expect("单位获取失败").eq_ignore_ascii_case("hours") && text_vec.get(0).unwrap().parse::<usize>().expect("数字部分转换失败")>time_gap{
                 return true
             }
             title_time=Some(text);
@@ -207,9 +207,6 @@ impl HackerNews{
                 continue;
             }
 
-            // 过滤完成，推送保存
-            pushed_urls.write().await.insert(id, current_date.clone());
-
             // ai总结：1. 获取源信息url 2.获取url链接内容 3.发送给大模型进行总结
             let origin_news_url=self.get_news_origin_url(&response).await.unwrap();
 
@@ -238,6 +235,9 @@ impl HackerNews{
                     tg_client.send_message(&text).await?;
                 },
             }
+
+            // 过滤完成，推送保存
+            pushed_urls.write().await.insert(id, current_date.clone());
         }
         Ok(())
     }
