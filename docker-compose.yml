@@ -6,8 +6,8 @@ services:
     volumes:
       - ./config:/config
       - ./logs:/logs
-    ports:
-      - "50051:50051"
+    # ports:
+    #   - "50051:50051"
     restart: unless-stopped
 
 volumes:
