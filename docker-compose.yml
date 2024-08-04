@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  news_app:
+    image: cheedonghu/news2tg:latest
+    # environment:
+    #   - RUST_CONFIG_PATH=/config/config.toml
+    volumes:
+      - ./config:/config
+      - ./logs:/logs
+    ports:
+      - "50051:50051"
+    restart: unless-stopped
+
+volumes:
+  config:
+  logs:

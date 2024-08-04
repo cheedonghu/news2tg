@@ -27,11 +27,18 @@ COPY --from=rust-builder /usr/src/news2tg/target/release/news2tg /app/news2tg
 # 创建配置文件目录
 RUN mkdir /config
 
+# 创建日志目录
+RUN mkdir /logs
+
 # 设置环境变量指向配置文件位置
 ENV RUST_CONFIG_PATH=/config/config.toml
 
-# 暴露必要的端口（其实没必要暴露）
-EXPOSE 11000
+# 暴露端口（其实没必要暴露）
+EXPOSE 50051
+
+# 下载 wait-for-it.sh 脚本
+RUN curl -o /usr/local/bin/wait-for-it.sh https://raw.githubusercontent.com/vishnubob/wait-for-it/master/wait-for-it.sh
+RUN chmod +x /usr/local/bin/wait-for-it.sh
 
 # 启动命令
-CMD ["sh", "-c", "python -m page_content_extractor.main & ./news2tg -c /config/config.toml"]
+CMD ["sh", "-c", "python -m page_content_extractor.main & wait-for-it.sh localhost:50051 -- ./news2tg -c $RUST_CONFIG_PATH >> /logs/news2tg.log 2>&1"]
