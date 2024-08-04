@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   news_app:
     image: cheedonghu/news2tg:latest
