@@ -1,26 +1,34 @@
 ## 介绍
-爬取v2ex和hacker news的新贴并通过tgbot推送到tg上
+爬取v2ex和hacker news的贴子并通过tgbot推送到tg上
 
-v2ex: 包含新贴推送和热帖标记，支持关键字标记
+v2ex: 包含新贴推送和热帖标记
 
 hacker news: 包含帖子推送和AI总结
 
-## 架构
 
-### v2ex
-api调用模块：reqwest
-
-IP池模块?:
-
-JSON数据解析模块: serde
-
-数据推送模块：teloxide
+## 使用方式
+- **使用前提: telegram bot + deepseek api(如果要用hacker news中文总结)**
 
 
-### hacker news
+### docker compose
+~~~bash
+# 1. 复制项目内的docker-compose.yml
+nano docker-compose.yml
 
-api调用模块：reqwest
+# 2. 创建挂载的文件夹
+mkdir ./logs && mkdir ./config
 
-JSON数据解析模块: serde
+# 3. 把项目内的配置文件放在config文件夹下
+nano ./config/config.toml
 
-AI交互模块：openai_dive
+# 4. 运行
+docker compose up -d
+~~~
+
+### 自己构建
+参考dockerfile文件
+
+## todo
+1. v2ex支持关键字
+2. hackernews支持AI总结的开关
+3. hackernews使用ollama 7b大模型
