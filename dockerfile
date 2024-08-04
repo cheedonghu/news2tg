@@ -1,6 +1,11 @@
 # 使用多阶段构建
-FROM rust:latest as rust-builder
+FROM rust:latest AS rust-builder
 WORKDIR /usr/src/news2tg
+
+# 安装git,protobuf-compiler等工具
+RUN apt-get update && apt-get install -y git && apt-get install -y protobuf-compiler
+RUN protoc --version
+
 # 从GitHub克隆Rust仓库
 RUN git clone https://github.com/cheedonghu/news2tg.git .
 RUN cargo build --release
@@ -8,7 +13,6 @@ RUN cargo build --release
 FROM python:3.11
 WORKDIR /app
 
-# 安装git
 RUN apt-get update && apt-get install -y git
 
 # 从GitHub克隆Python仓库
