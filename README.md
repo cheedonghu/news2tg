@@ -9,6 +9,7 @@ hacker news: 包含帖子推送和AI总结
 ## 使用方式
 - **使用前提: telegram bot + deepseek api(如果要用hacker news中文总结)**
 
+- 不想折腾可以直接加入[频道]，会推送v2ex和hacker news的热帖(https://t.me/news2tg)
 
 ### docker compose
 ~~~bash
