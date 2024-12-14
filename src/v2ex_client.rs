@@ -61,13 +61,13 @@ impl V2exClient {
 
     pub async fn fetch_latest_topics(&self) -> Result<Vec<Topic>, Error> {
         let url = "https://www.v2ex.com/api/topics/latest.json";
-        let response = self.client.get(url).send().await?.json::<Vec<Topic>>().await?;
+        let response = self.client.get(url).header("User-Agent", "PostmanRuntime/7.37.3").send().await?.json::<Vec<Topic>>().await?;
         Ok(response)
     }
     
     pub async fn fetch_hot_topics(&self) -> Result<Vec<Topic>, Error> {
         let url = "https://www.v2ex.com/api/topics/hot.json";
-        let response = self.client.get(url).send().await?.json::<Vec<Topic>>().await?;
+        let response = self.client.get(url).header("User-Agent", "PostmanRuntime/7.37.3").send().await?.json::<Vec<Topic>>().await?;
         Ok(response)
     }
 
@@ -155,3 +155,57 @@ pub async fn fetch_hotest_and_notify(
     Ok(())
 }
 
+
+#[cfg(test)]
+mod tests{
+    use std::error::Error;
+
+    use super::*;
+    use chrono::Utc;
+    use crate::config::Config;
+
+   
+    #[tokio::test]
+    async fn test_url(){
+        // let mut base_date = Utc::now().format("%Y%m%d").to_string();
+        // let mut v2ex_client=V2exClient::new(Client::new(), base_date.clone());
+        let config = Config::from_file("myconfig.toml");
+        let client=Client::new();
+        
+        let url = "http://www.v2ex.com/api/topics/hot.json";
+        // let origin_response=client
+        // .get(url)
+        // .header("User-Agent", "PostmanRuntime/7.37.3")
+        // .send().await.expect("Failed to send request");
+        // let text = origin_response.text().await.expect("Failed to read response text");
+        // println!("Raw response: {}", text);
+        
+        // let url = "https://www.v2ex.com/api/v2/nodes/hot";
+        // let origin_response=client
+        // .get(url)
+        // .header("Authorization", &config.v2ex.token)
+        // .send().await.expect("Failed to send request");
+        // let text = origin_response.text().await.expect("Failed to read response text");
+        // println!("Raw response: {}", text);
+
+
+        let response = match client.get(url).header("User-Agent", "PostmanRuntime/7.37.3").send().await {
+            Ok(resp) => match resp.json::<Vec<Topic>>().await {
+                Ok(json) => {
+                    println!("get json successfully, the first is {:?}", json.get(0).unwrap());
+                    json
+                },
+                Err(err) => {
+                    eprintln!("Error parsing JSON: {:?}", err);
+                    return;
+                }
+            },
+            Err(err) => {
+                eprintln!("Error sending request: {:?}", err);
+                return;
+            }
+        };
+
+    }
+                       // 返回内容
+}
