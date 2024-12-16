@@ -7,6 +7,8 @@ mod tgclient;
 mod llm;
 mod hackernews;
 mod grpc;
+mod traits;
+mod implementations;
 
 use config::*;
 use hackernews::HackerNews;

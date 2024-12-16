@@ -8,6 +8,7 @@ name="client"
 path="src/bin/client.rs"
 
 [dependencies]
+async-trait = "0.1.83"
 reqwest = "0.12.4"
 scraper = "0.19"
 tokio = { version = "1", features = ["full", "signal"] }
