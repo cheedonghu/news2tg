@@ -9,6 +9,7 @@ mod hackernews;
 mod grpc;
 mod traits;
 mod implementations;
+mod common;
 
 use config::*;
 use hackernews::HackerNews;

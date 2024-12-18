@@ -1,9 +1,6 @@
 use std::error::Error;
-use reqwest::{Client};
 use async_trait::async_trait;
 
-
-use crate::models::Topic;
 
 // 定义 Monitor trait
 #[async_trait]

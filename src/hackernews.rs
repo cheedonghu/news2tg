@@ -20,7 +20,6 @@ use chrono::{Datelike, Duration, Local, TimeZone, Timelike};
 
 
 use crate::tools;
-use crate::models::MyError;
 
 pub struct HackerNews{
     pub http_client: Client,

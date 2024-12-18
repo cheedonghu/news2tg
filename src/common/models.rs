@@ -2,7 +2,40 @@ use serde::Deserialize;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
 use std::error::Error;
-use std::fmt::{Display,Formatter,Result};
+use getset::{CopyGetters, Getters, MutGetters, Setters};
+
+
+/// 自定义错误
+#[derive(Debug)]
+pub enum News2tgError {
+    AIError(String),
+    MonitorError(String),
+    NotifyError(String)
+}
+impl Error for News2tgError {}
+impl std::fmt::Display for News2tgError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match &self {
+            News2tgError::AIError(msg) => write!(f, "AI function Error: {}", msg),
+            News2tgError::MonitorError(msg) => write!(f, "Monitor function Error: {}", msg),
+            News2tgError::NotifyError(msg) => write!(f, "notify function Error: {}", msg),
+        }
+    }
+}
+
+/// 通知基类，作为函数参数进行交互
+#[derive(Getters, Setters, MutGetters, Deserialize, Clone, Debug, Default)]
+pub struct News2tgNotifyBase {
+    #[getset(get, set, get_mut)]
+    pub url: String,
+
+    #[getset(get_copy = "pub", set = "pub", get_mut = "pub")]
+    pub title: String,
+
+    #[getset(get_copy = "pub", set = "pub", get_mut = "pub")]
+    pub content: String,
+}
+
 
 
 /// v2ex响应结构
