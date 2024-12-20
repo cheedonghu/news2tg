@@ -22,13 +22,13 @@ pub trait News2tg {
     fn get_base(&mut self) -> &mut News2tgNotifyBase;
 
     // 定义抽象方法fetch/notify，这里只是方法签名
-    async fn fetch(&self) -> Result<Self::Output, News2tgError>;
+    async fn fetch(&mut self, config: &Config) -> Result<Self::Output, News2tgError>;
 
     // 这里要推送的数据采用传地址来处理还是采用成员变量处理？ 要么&mut self要么Param， 这里用param
-    async fn ai_transfer<T>(&self, param: &T) -> Result<Self::Output, News2tgError> where T: AIHelper + Send + Sync;
+    async fn ai_transfer<T>(&mut self, param: &T) -> Result<Self::Output, News2tgError> where T: AIHelper + Send + Sync;
 
-    async fn notify<T>(&self, param: &T) -> Result<Self::Output, News2tgError> where T: Notify + Send + Sync;
+    async fn notify(&mut self, param:Self::Output) -> Result<bool, News2tgError>;
 
     // 核心组装方法，需要实现
-    async fn run(&self, config: &Config) -> Result<Self::Output, News2tgError>;
+    async fn run(&mut self, config: &Config) -> Result<Self::Output, News2tgError>;
 }

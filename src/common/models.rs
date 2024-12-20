@@ -10,7 +10,9 @@ use getset::{CopyGetters, Getters, MutGetters, Setters};
 pub enum News2tgError {
     AIError(String),
     MonitorError(String),
-    NotifyError(String)
+    NotifyError(String),
+    UnsupportError(String),
+    RuntimeError(String),
 }
 impl Error for News2tgError {}
 impl std::fmt::Display for News2tgError {
@@ -18,7 +20,9 @@ impl std::fmt::Display for News2tgError {
         match &self {
             News2tgError::AIError(msg) => write!(f, "AI function Error: {}", msg),
             News2tgError::MonitorError(msg) => write!(f, "Monitor function Error: {}", msg),
-            News2tgError::NotifyError(msg) => write!(f, "notify function Error: {}", msg),
+            News2tgError::NotifyError(msg) => write!(f, "Notify function Error: {}", msg),
+            News2tgError::UnsupportError(msg) => write!(f, "Unsupport function Error: {}", msg),
+            News2tgError::RuntimeError(msg) => write!(f, "Runtime Error: {}", msg),
         }
     }
 }
@@ -26,7 +30,7 @@ impl std::fmt::Display for News2tgError {
 /// 通知基类，作为函数参数进行交互
 #[derive(Getters, Setters, MutGetters, Deserialize, Clone, Debug, Default)]
 pub struct News2tgNotifyBase {
-    #[getset(get, set, get_mut)]
+    #[getset(get_copy = "pub", set = "pub", get_mut = "pub")]
     pub url: String,
 
     #[getset(get_copy = "pub", set = "pub", get_mut = "pub")]
@@ -34,6 +38,9 @@ pub struct News2tgNotifyBase {
 
     #[getset(get_copy = "pub", set = "pub", get_mut = "pub")]
     pub content: String,
+
+    #[getset(get_copy = "pub", set = "pub", get_mut = "pub")]
+    pub content_transfered_by_ai: String,
 }
 
 

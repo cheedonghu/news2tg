@@ -8,10 +8,12 @@ use crate::traits::monitor::Monitor;
 use crate::common::models::{News2tgError, Topic,News2tgNotifyBase};
 use crate::traits::news2tg::News2tg;
 use crate::common::config::Config;
+use crate::common::tools;
+use chrono::Utc;
+use chrono::FixedOffset;
 
-use super::ai_helper_deepseek::AIHelperDeepSeek;
 use crate::traits::ai_helper::AIHelper;
-use crate::traits::notify::{self, Notify};
+use crate::traits::notify::Notify;
 
 
 // 定义 MonitorV2EXError
@@ -31,26 +33,32 @@ impl std::fmt::Display for MonitorV2EXError {
 }
 
 // 定义 MonitorV2EX 结构体
-pub struct MonitorV2EX{
+pub struct MonitorV2EX<N: Notify> {
     base_info: News2tgNotifyBase,
     http_client: Client,
-    pushed_urls: RwLock<HashMap<String, String>>
+    pushed_urls: RwLock<HashMap<String, String>>,
+    notify_client: N,
 }
 
 
-impl MonitorV2EX {
-    pub fn new(http_client: Client) -> Self{
+impl<N: Notify> MonitorV2EX<N> {
+    pub fn new(http_client: Client, notify_client: N) -> Self{
         MonitorV2EX{
             base_info: News2tgNotifyBase::default(),
             http_client: http_client,
-            pushed_urls: RwLock::new(HashMap::new())
+            pushed_urls: RwLock::new(HashMap::new()),
+            notify_client,
         }
+    }
+
+    pub fn get_pushed_urls(&mut self) -> &mut RwLock<HashMap<String, String>>{
+        &mut self.pushed_urls
     }
 }
 
 // 实现 Monitor trait for MonitorV2EX
 #[async_trait]
-impl Monitor for MonitorV2EX {
+impl<N: Notify+ Send + Sync> Monitor for MonitorV2EX<N> {
     type Output = Vec<Topic>;
     type MonitorError = MonitorV2EXError;
 
@@ -101,9 +109,9 @@ impl Monitor for MonitorV2EX {
 }
 
 #[async_trait]
-impl News2tg for MonitorV2EX {
+impl<N: Notify+ Send + Sync> News2tg for MonitorV2EX<N> {
     type Param = ();
-    type Output = Vec<Topic>;
+    type Output = Vec<News2tgNotifyBase>;
 
     fn get_base(&mut self) -> &mut News2tgNotifyBase {
         // Implementation here
@@ -113,46 +121,94 @@ impl News2tg for MonitorV2EX {
 
 
     /// 按配置文件中的规则调用monitor接口获取需要的内容
-    async fn fetch(&self, config: &Config) -> Result<Self::Output, News2tgError>{
-        if(config.features.v2ex_fetch_hot){
-            //获取热帖
-            let topics: Vec<Topic>=self.fetch_hot().unwrap().into();
+    async fn fetch(&mut self, config: &Config) -> Result<Self::Output, News2tgError>{
+        let mut result:Vec<News2tgNotifyBase>=Vec::new();
+        let mut hot_topics: Vec<Topic>=Vec::new();
+        let mut new_topics: Vec<Topic>=Vec::new();
+        if config.features.v2ex_fetch_hot{
+            hot_topics=self.fetch_hot().await.unwrap().into();
+        }
+        if config.features.v2ex_fetch_latest{
+            new_topics=self.fetch_new().await.unwrap().into();
+        }
+        // 获取的帖子
+        // let topics: Vec<Topic>=hot_topics.into_iter()
+        // .chain(new_topics.into_iter())
+        // .collect();
 
-            // 判断是否有目标帖子
-            for topic in topics {
-                if !shared_item.v2ex_pushed_urls.read().await.contains_key(&topic.url) {
-                    let title=truncate_utf8(&topic.title, 4000);
-                    let title=escape_markdown_v2(&title);
-                    // message.push_str(&format!("*{}*: [{}]({})\n",section_title, topic.title, topic.url));
-                    new_topic_message.push(format!("*{}*: [{}]({})\n",section_title, title, topic.url));
-                    shared_item.v2ex_pushed_urls.write().await.insert(topic.url.clone(), current_date.to_string());
-                }
+        let hot_title="热帖推送";
+        let new_title="新帖推送";
+        let current_date=Utc::now().with_timezone(&FixedOffset::east_opt(5 * 60 * 60).unwrap()).format("%Y%m%d").to_string();
+
+        // 判断是否有目标帖子
+        for topic in hot_topics {
+            if !self.get_pushed_urls().read().await.contains_key(&topic.url) {
+                let mut output=News2tgNotifyBase::default();
+
+                let title=tools::truncate_utf8(&topic.title, 4000);
+                let content_title=tools::escape_markdown_v2(&title);
+                // message.push_str(&format!("*{}*: [{}]({})\n",section_title, topic.title, topic.url));
+                output.set_title(title);
+                output.set_content(format!("*{}*: [{}]({})\n",hot_title, content_title, &topic.url));
+                output.set_url((&topic.url).to_string());
+                result.push(output);
+                self.get_pushed_urls().write().await.insert(topic.url.clone(), current_date.to_string());
             }
         }
 
-        // 判断是否已经推送
+        for topic in new_topics {
+            if !self.get_pushed_urls().read().await.contains_key(&topic.url) {
+                let mut output=News2tgNotifyBase::default();
 
-        // 获取内容格式化后返回
+                let title=tools::truncate_utf8(&topic.title, 4000);
+                let content_title=tools::escape_markdown_v2(&title);
+                // message.push_str(&format!("*{}*: [{}]({})\n",section_title, topic.title, topic.url));
+                output.set_title(title);
+                output.set_content(format!("*{}*: [{}]({})\n",new_title, content_title, &topic.url));
+                output.set_url((&topic.url).to_string());
+                result.push(output);
+                self.get_pushed_urls().write().await.insert(topic.url.clone(), current_date.to_string());
+            }
+        }
 
+        Ok(result)
     }
 
-    async fn ai_transfer<T>(&self, param: &T) -> Result<Self::Output, News2tgError>
+    async fn ai_transfer<T>(&mut self, _param: &T) -> Result<Self::Output, News2tgError>
     where
         T: AIHelper + Send + Sync,
     {
         // Implementation here
+        Err(News2tgError::MonitorError("v2ex监控无需ai总结".to_string()))
     }
 
-    async fn notify<T>(&self, param: &T) -> Result<Self::Output, News2tgError>
-    where
-        T: Notify + Send + Sync,
+    async fn notify(&mut self, param: Self::Output) -> Result<bool, News2tgError>
     {
+        // let content:&Vec<News2tgNotifyBase> = param;
         // Implementation here
+        
+        let contents:Vec<String>=param.iter().map(|item| item.content.clone()).collect();
+
+        let _ = self.notify_client.notify_batch(&contents).await;
+
+        Ok(true)
     }
 
     /// 这里决定该监控类用哪个ai和推送到哪
-    async fn run(&self, config: &Config) -> Result<Self::Output, News2tgError> {
-        // Implementation here
+    async fn run(&mut self, config: &Config) -> Result<Self::Output, News2tgError> {
+        let result: Vec<News2tgNotifyBase>=match self.fetch(config).await {
+            Ok(output)=> output,
+            Err(err)=> {
+                eprintln!("获取V2EX信息失败");
+                return Err(err);
+            }
+        };
+
+        if result.capacity()>0{
+            let _ =self.notify(result).await;
+        }
+        
+        Ok(Vec::new())
     }
 }
 
@@ -163,20 +219,22 @@ mod tests{
 
     use super::*;
     use chrono::Utc;
-    use crate::config::Config;
+    use crate::{common::config::Config, implementations::notify_tg::NotifyTelegram};
 
    
     #[tokio::test]
     async fn test_url(){
         // let mut base_date = Utc::now().format("%Y%m%d").to_string();
         // let mut v2ex_client=V2exClient::new(Client::new(), base_date.clone());
-        let config = Config::from_file("myconfig.toml");
+        let config = &Config::from_file("myconfig.toml");
         let client=Client::new();
-        
-        let monitor=MonitorV2EX::new(client);
-        let result=monitor.fetch_hot().await.map_err(|err| eprintln!("error: {:?}", err)).unwrap();
 
-        println!("result is :{:?}", result.get(0))
+        let tg_client=NotifyTelegram::new(config.telegram.api_token.to_string(), config.telegram.chat_id.parse::<i64>().expect("Invalid chat ID"));
+        let mut monitor=MonitorV2EX::new(client,tg_client );
+        // let result=monitor.fetch_hot().await.map_err(|err| eprintln!("error: {:?}", err)).unwrap();
+
+        let _ = monitor.run(&config).await;
+        // println!("result is :{:?}", result.get(0))
 
     }
                        // 返回内容
