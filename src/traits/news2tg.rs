@@ -19,13 +19,13 @@ pub trait News2tg {
     type Output;
 
     // 一个辅助方法，用于获取基础结构体的引用
-    fn get_base(&mut self) -> &mut News2tgNotifyBase;
+    // fn get_base(&mut self) -> &mut News2tgNotifyBase;
 
     // 定义抽象方法fetch/notify，这里只是方法签名
     async fn fetch(&mut self, config: &Config) -> Result<Self::Output, News2tgError>;
 
-    // 这里要推送的数据采用传地址来处理还是采用成员变量处理？ 要么&mut self要么Param， 这里用param
-    async fn ai_transfer<T>(&mut self, param: &T) -> Result<Self::Output, News2tgError> where T: AIHelper + Send + Sync;
+    // 这里要推送的数据采用传地址来处理还是采用成员变量处理？
+    async fn ai_transfer(&mut self, param: Self::Output) -> Result<Self::Output, News2tgError>;
 
     async fn notify(&mut self, param:Self::Output) -> Result<bool, News2tgError>;
 

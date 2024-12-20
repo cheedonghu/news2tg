@@ -30,17 +30,25 @@ impl std::fmt::Display for News2tgError {
 /// 通知基类，作为函数参数进行交互
 #[derive(Getters, Setters, MutGetters, Deserialize, Clone, Debug, Default)]
 pub struct News2tgNotifyBase {
-    #[getset(get_copy = "pub", set = "pub", get_mut = "pub")]
-    pub url: String,
+    /// 目标网址
+    #[getset(get = "pub", set = "pub", get_mut = "pub")]
+    url: String,
 
-    #[getset(get_copy = "pub", set = "pub", get_mut = "pub")]
-    pub title: String,
+    /// 源网址，对于hacker news这类论坛来说，还需要获取其讨论的源网址
+    #[getset(get = "pub", set = "pub", get_mut = "pub")]
+    origin_url: String,
 
-    #[getset(get_copy = "pub", set = "pub", get_mut = "pub")]
-    pub content: String,
+    /// 标题，没啥用
+    #[getset(get = "pub", set = "pub", get_mut = "pub")]
+    title: String,
 
-    #[getset(get_copy = "pub", set = "pub", get_mut = "pub")]
-    pub content_transfered_by_ai: String,
+    /// 内容
+    #[getset(get = "pub", set = "pub", get_mut = "pub")]
+    content: String,
+
+    /// ai转义标志位
+    #[getset(get = "pub", set = "pub", get_mut = "pub")]
+    content_transfered_by_ai_flag: bool,
 }
 
 

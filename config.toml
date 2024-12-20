@@ -4,7 +4,7 @@ chat_id = "id"
 
 [features]
 # 新帖推送开关
-v2ex_fetch_latest = false
+v2ex_fetch_new = false
 # 热帖推送开关
 v2ex_fetch_hot = true
 # hacker news top贴推送开关

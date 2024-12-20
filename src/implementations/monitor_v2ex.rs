@@ -11,6 +11,7 @@ use crate::common::config::Config;
 use crate::common::tools;
 use chrono::Utc;
 use chrono::FixedOffset;
+use chrono::Local;
 
 use crate::traits::ai_helper::AIHelper;
 use crate::traits::notify::Notify;
@@ -34,7 +35,6 @@ impl std::fmt::Display for MonitorV2EXError {
 
 // 定义 MonitorV2EX 结构体
 pub struct MonitorV2EX<N: Notify> {
-    base_info: News2tgNotifyBase,
     http_client: Client,
     pushed_urls: RwLock<HashMap<String, String>>,
     notify_client: N,
@@ -44,7 +44,6 @@ pub struct MonitorV2EX<N: Notify> {
 impl<N: Notify> MonitorV2EX<N> {
     pub fn new(http_client: Client, notify_client: N) -> Self{
         MonitorV2EX{
-            base_info: News2tgNotifyBase::default(),
             http_client: http_client,
             pushed_urls: RwLock::new(HashMap::new()),
             notify_client,
@@ -113,13 +112,6 @@ impl<N: Notify+ Send + Sync> News2tg for MonitorV2EX<N> {
     type Param = ();
     type Output = Vec<News2tgNotifyBase>;
 
-    fn get_base(&mut self) -> &mut News2tgNotifyBase {
-        // Implementation here
-        &mut self.base_info
-    }
-
-
-
     /// 按配置文件中的规则调用monitor接口获取需要的内容
     async fn fetch(&mut self, config: &Config) -> Result<Self::Output, News2tgError>{
         let mut result:Vec<News2tgNotifyBase>=Vec::new();
@@ -138,7 +130,7 @@ impl<N: Notify+ Send + Sync> News2tg for MonitorV2EX<N> {
 
         let hot_title="热帖推送";
         let new_title="新帖推送";
-        let current_date=Utc::now().with_timezone(&FixedOffset::east_opt(5 * 60 * 60).unwrap()).format("%Y%m%d").to_string();
+        let current_date=Local::now().format("%Y%m%d").to_string();
 
         // 判断是否有目标帖子
         for topic in hot_topics {
@@ -174,10 +166,7 @@ impl<N: Notify+ Send + Sync> News2tg for MonitorV2EX<N> {
         Ok(result)
     }
 
-    async fn ai_transfer<T>(&mut self, _param: &T) -> Result<Self::Output, News2tgError>
-    where
-        T: AIHelper + Send + Sync,
-    {
+    async fn ai_transfer(&mut self, _param: Self::Output) -> Result<Self::Output, News2tgError>{
         // Implementation here
         Err(News2tgError::MonitorError("v2ex监控无需ai总结".to_string()))
     }
@@ -187,7 +176,7 @@ impl<N: Notify+ Send + Sync> News2tg for MonitorV2EX<N> {
         // let content:&Vec<News2tgNotifyBase> = param;
         // Implementation here
         
-        let contents:Vec<String>=param.iter().map(|item| item.content.clone()).collect();
+        let contents:Vec<String>=param.iter().map(|item| item.content().clone()).collect();
 
         let _ = self.notify_client.notify_batch(&contents).await;
 
@@ -229,15 +218,13 @@ mod tests{
         let config = &Config::from_file("myconfig.toml");
         let client=Client::new();
 
-        let tg_client=NotifyTelegram::new(config.telegram.api_token.to_string(), config.telegram.chat_id.parse::<i64>().expect("Invalid chat ID"));
+        let tg_client=NotifyTelegram::new(config.telegram.api_token.to_string(), config.telegram.chat_id.parse::<i64>().expect("Invalid Tg chat id"));
         let mut monitor=MonitorV2EX::new(client,tg_client );
         // let result=monitor.fetch_hot().await.map_err(|err| eprintln!("error: {:?}", err)).unwrap();
 
         let _ = monitor.run(&config).await;
         // println!("result is :{:?}", result.get(0))
-
     }
-                       // 返回内容
 }
 
 

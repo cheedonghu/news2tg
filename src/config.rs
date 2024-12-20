@@ -22,6 +22,7 @@ pub struct Features {
     pub v2ex_fetch_hot: bool,
     /// hacker news top贴推送开关
     pub hn_fetch_top: bool,
+    pub hn_fetch_latest: bool,
     /// 仅解析前n个的hacker news top帖子
     pub hn_fetch_num: usize,
     /// hacker news目标帖子距今时间（hacker news的top算法可能导致大量新帖冒出）
