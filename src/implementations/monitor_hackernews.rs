@@ -6,19 +6,20 @@ use crate::traits::monitor::Monitor;
 use crate::tokio::sync::RwLock;
 use std::collections::HashMap;
 use crate::Local;
-
 use crate::common::models::{News2tgError, Topic,News2tgNotifyBase};
 use crate::traits::news2tg::News2tg;
 use crate::common::config::Config;
 use crate::common::tools;
 use scraper::{Html,Selector};
-
 use crate::traits::ai_helper::AIHelper;
 use crate::traits::notify::Notify;
 use crate::grpc::digest::{digest_client::DigestClient,digest_server::DigestServer};
 use crate::grpc::digest::ServiceRequest;
 use tonic::transport::Channel;
-use tokio::time::Duration;
+use crate::DateTime;
+use crate::ChronoDuration;
+use std::time::Duration;
+use tokio::time::interval;
 
 // 定义 MonitorHackerNewsError
 #[derive(Debug)]
@@ -39,6 +40,7 @@ impl std::fmt::Display for MonitorHackerNewsError {
 // 定义 MonitorHackerNews 结构体
 pub struct MonitorHackerNews<N: Notify, A: AIHelper> {
     http_client: Client,
+    // map里面一个是url用来去重，一个是日期用来清理内存占用
     pushed_urls: RwLock<HashMap<String, String>>,
     notify_client: N,
     ai_client: A,
@@ -47,6 +49,7 @@ pub struct MonitorHackerNews<N: Notify, A: AIHelper> {
 
 
 impl<N: Notify, A: AIHelper> MonitorHackerNews<N,A> {
+
     pub fn new(http_client: Client, notify_client: N, ai_client: A, digest_client: DigestClient<Channel>) -> Self{
         MonitorHackerNews{
             http_client: http_client,
@@ -55,12 +58,15 @@ impl<N: Notify, A: AIHelper> MonitorHackerNews<N,A> {
             ai_client,
             digest_client,
         }
-
-        
     }
 
-    pub fn get_pushed_urls(&mut self) -> &mut RwLock<HashMap<String, String>>{
-        &mut self.pushed_urls
+    async fn clean_old_urls(&mut self, now: DateTime<Local>){
+        let mut hn_cutoff_date = format!("{}",
+        now.checked_sub_signed(ChronoDuration::days(15)).unwrap().format("%Y%m%d"));
+    
+        self.pushed_urls.write().await.retain(|_, date_str| {
+            date_str >= &mut hn_cutoff_date
+        });
     }
 
     /// 从网页里面判断发帖时间
@@ -132,7 +138,6 @@ impl<N: Notify, A: AIHelper> MonitorHackerNews<N,A> {
             Ok(response) => {
                 let digest=response.into_inner().output;
                 // 打印服务器响应
-                // info!("调用gRPC结果：\"{:?}\"", digest);
                 println!("{} 调用python网页摘要接口结果：\"{:?}\"", Local::now().format("%Y年%m月%d日 %H:%M:%S"),digest);
                 // 返回结果
                 Ok(digest)
@@ -178,8 +183,10 @@ impl<N: Notify, A: AIHelper> MonitorHackerNews<N,A> {
                 output.set_url(url);
                 output.set_origin_url(origin_news_url);
                 output.set_content(digest);
+                output.set_content_transfered_by_ai_flag(true);
             },
-            Err(_err) => {
+            Err(err) => {
+                eprintln!("网页摘要获取失败，原因：{}", err);
                 output.set_url(url);
                 output.set_origin_url(origin_news_url);
                 // 无需ai翻译
@@ -300,7 +307,7 @@ where A: AIHelper<Output = String>
                 let format = format!("*{}*: \n Comment Site:{}\n\n {}\n\n[{}]({})\n", 
                 output.title(),
                 tools::escape_markdown_v2(&output.url()), 
-                format!("AI总结: {}", tools::escape_markdown_v2(&output.content())),
+                format!("AI总结: {}", tools::escape_markdown_v2(&tools::truncate_utf8(&output.content(), 2000))),
                 "源内容网页: ", tools::escape_markdown_v2(&output.origin_url()));
                 output.set_content(format);
             }else {
@@ -332,21 +339,30 @@ where A: AIHelper<Output = String>
     }
 
     /// 这里决定该监控类用哪个ai和推送到哪
-    async fn run(&mut self, config: &Config) -> Result<Self::Output, News2tgError> {
-        let result: Vec<News2tgNotifyBase>=match self.fetch(config).await {
-            Ok(output)=> output,
-            Err(err)=> {
-                eprintln!("获取hacker news信息失败");
-                return Err(err);
-            }
-        };
+    async fn run(&mut self, config: &Config) -> Result<(), News2tgError> {
+    
+        // 创建一个 5min 的周期定时器，可自行调整
+        let mut main_ticker = interval(Duration::from_secs(1*5));
 
-        if result.capacity()>0{
-            let result =self.ai_transfer(result).await.unwrap();
-            let _ =self.notify(result).await;
+        loop {
+            main_ticker.tick().await;
+
+            let result: Vec<News2tgNotifyBase>=match self.fetch(config).await {
+                Ok(output)=> output,
+                Err(err)=> {
+                    eprintln!("获取hacker news信息失败");
+                    return Err(err);
+                }
+            };
+    
+            if result.capacity()>0{
+                let result =self.ai_transfer(result).await.unwrap();
+                let _ =self.notify(result).await;
+            }
+    
+            self.clean_old_urls(Local::now()).await;
         }
         
-        Ok(Vec::new())
     }
 }
 
@@ -360,13 +376,13 @@ mod tests{
     use crate::common::config::Config;
     use crate::implementations::ai_helper_deepseek::AIHelperDeepSeek;
     use crate::implementations::notify_tg::NotifyTelegram;
-
+    use std::time::Duration;
    
     #[tokio::test]
     async fn test_url(){
         let config = Config::from_file("myconfig.toml");
 
-            // 新建gRPC客户端
+        // 新建gRPC客户端
         let channel = Channel::from_static("http://[::1]:50051")
         .connect_timeout(Duration::from_secs(5))  // 设置连接超时时间
         .timeout(Duration::from_secs(10))         // 设置调用超时时间

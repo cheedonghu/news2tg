@@ -14,7 +14,7 @@ pub struct Cli {
 }
 
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Features {
     /// 新帖推送开关
     pub v2ex_fetch_latest: bool,
@@ -31,18 +31,18 @@ pub struct Features {
 }
 
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct TelegramConfig {
     pub api_token: String,
     pub chat_id: String,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct DeepSeek {
     pub api_token: String
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Config {
     pub features: Features,
     pub telegram: TelegramConfig,

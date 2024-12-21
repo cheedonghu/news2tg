@@ -70,7 +70,7 @@ impl Notify for NotifyTelegram{
 mod tests{
 
     use super::*;
-    use crate::config::Config;
+    use crate::common::config::Config;
 
     #[tokio::test]
     async fn test_send_telegram_message(){

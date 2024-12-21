@@ -30,5 +30,5 @@ pub trait News2tg {
     async fn notify(&mut self, param:Self::Output) -> Result<bool, News2tgError>;
 
     // 核心组装方法，需要实现
-    async fn run(&mut self, config: &Config) -> Result<Self::Output, News2tgError>;
+    async fn run(&mut self, config: &Config) -> Result<(), News2tgError>;
 }

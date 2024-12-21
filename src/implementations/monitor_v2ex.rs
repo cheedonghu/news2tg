@@ -11,7 +11,10 @@ use crate::common::config::Config;
 use crate::common::tools;
 use chrono::Utc;
 use chrono::FixedOffset;
-use chrono::Local;
+use chrono::{Local,DateTime};
+use crate::ChronoDuration;
+use std::time::Duration;
+use tokio::time::interval;
 
 use crate::traits::ai_helper::AIHelper;
 use crate::traits::notify::Notify;
@@ -36,6 +39,7 @@ impl std::fmt::Display for MonitorV2EXError {
 // 定义 MonitorV2EX 结构体
 pub struct MonitorV2EX<N: Notify> {
     http_client: Client,
+    // map里面一个是url用来去重，一个是日期用来清理内存占用
     pushed_urls: RwLock<HashMap<String, String>>,
     notify_client: N,
 }
@@ -52,6 +56,15 @@ impl<N: Notify> MonitorV2EX<N> {
 
     pub fn get_pushed_urls(&mut self) -> &mut RwLock<HashMap<String, String>>{
         &mut self.pushed_urls
+    }
+
+    async fn clean_old_urls(&mut self, now: DateTime<Local>){
+        let mut v2ex_cutoff_date = format!("{}",
+        now.checked_sub_signed(ChronoDuration::days(5)).unwrap().format("%Y%m%d"));
+    
+        self.pushed_urls.write().await.retain(|_, date_str| {
+            date_str >= &mut v2ex_cutoff_date
+        });
     }
 }
 
@@ -171,8 +184,7 @@ impl<N: Notify+ Send + Sync> News2tg for MonitorV2EX<N> {
         Err(News2tgError::MonitorError("v2ex监控无需ai总结".to_string()))
     }
 
-    async fn notify(&mut self, param: Self::Output) -> Result<bool, News2tgError>
-    {
+    async fn notify(&mut self, param: Self::Output) -> Result<bool, News2tgError>{
         // let content:&Vec<News2tgNotifyBase> = param;
         // Implementation here
         
@@ -184,21 +196,30 @@ impl<N: Notify+ Send + Sync> News2tg for MonitorV2EX<N> {
     }
 
     /// 这里决定该监控类用哪个ai和推送到哪
-    async fn run(&mut self, config: &Config) -> Result<Self::Output, News2tgError> {
-        let result: Vec<News2tgNotifyBase>=match self.fetch(config).await {
-            Ok(output)=> output,
-            Err(err)=> {
-                eprintln!("获取V2EX信息失败");
-                return Err(err);
-            }
-        };
+    async fn run(&mut self, config: &Config) -> Result<(), News2tgError> {
+        // 创建一个 2min 的周期定时器，可自行调整
+        let mut main_ticker = interval(Duration::from_secs(60*2));
 
-        if result.capacity()>0{
-            let _ =self.notify(result).await;
+        loop {
+            main_ticker.tick().await;
+
+            // 核心逻辑
+            let result: Vec<News2tgNotifyBase>=match self.fetch(config).await {
+                Ok(output)=> output,
+                Err(err)=> {
+                    eprintln!("获取V2EX信息失败");
+                    return Err(err);
+                }
+            };
+    
+            if result.capacity()>0{
+                let _ =self.notify(result).await;
+            }
+    
+            self.clean_old_urls(Local::now()).await;
         }
-        
-        Ok(Vec::new())
     }
+    
 }
 
 
