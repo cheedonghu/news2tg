@@ -8,7 +8,8 @@ v2ex_fetch_latest = false
 # 热帖推送开关
 v2ex_fetch_hot = true
 # hacker news top贴推送开关
-hn_fetch_top = true
+hn_fetch_top = false
+hn_fetch_latest=false
 # 仅解析前5个的hacker news top帖子
 hn_fetch_num = 5
 # hacker news目标帖子距今时间（hacker news的top算法可能导致大量新帖冒出） 单位:H

@@ -2,21 +2,55 @@ use serde::Deserialize;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
 use std::error::Error;
-use std::fmt::{Display,Formatter,Result};
+use getset::{CopyGetters, Getters, MutGetters, Setters};
+
 
 /// 自定义错误
 #[derive(Debug)]
-pub struct MyError {
-    pub message: String,
+pub enum News2tgError {
+    AIError(String),
+    MonitorError(String),
+    NotifyError(String),
+    UnsupportError(String),
+    RuntimeError(String),
 }
-
-impl Display for MyError {
-    fn fmt(&self, f: &mut Formatter) -> Result {
-        write!(f, "Custom Error: {}", self.message)
+impl Error for News2tgError {}
+impl std::fmt::Display for News2tgError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match &self {
+            News2tgError::AIError(msg) => write!(f, "AI function Error: {}", msg),
+            News2tgError::MonitorError(msg) => write!(f, "Monitor function Error: {}", msg),
+            News2tgError::NotifyError(msg) => write!(f, "Notify function Error: {}", msg),
+            News2tgError::UnsupportError(msg) => write!(f, "Unsupport function Error: {}", msg),
+            News2tgError::RuntimeError(msg) => write!(f, "Runtime Error: {}", msg),
+        }
     }
 }
 
-impl Error for MyError {}
+/// 通知基类，作为函数参数进行交互
+#[derive(Getters, Setters, MutGetters, Deserialize, Clone, Debug, Default)]
+pub struct News2tgNotifyBase {
+    /// 目标网址
+    #[getset(get = "pub", set = "pub", get_mut = "pub")]
+    url: String,
+
+    /// 源网址，对于hacker news这类论坛来说，还需要获取其讨论的源网址
+    #[getset(get = "pub", set = "pub", get_mut = "pub")]
+    origin_url: String,
+
+    /// 标题，没啥用
+    #[getset(get = "pub", set = "pub", get_mut = "pub")]
+    title: String,
+
+    /// 内容
+    #[getset(get = "pub", set = "pub", get_mut = "pub")]
+    content: String,
+
+    /// ai转义标志位
+    #[getset(get = "pub", set = "pub", get_mut = "pub")]
+    content_transfered_by_ai_flag: bool,
+}
+
 
 
 /// v2ex响应结构

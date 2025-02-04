@@ -1,18 +1,18 @@
 use std::error::Error;
 use std::fs;
 
-static OUT_DIR: &str = "src/proto_gen";
+static OUT_DIR: &str = "src/grpc";
 
 fn main() -> Result<(), Box<dyn Error>> {
     let protos = [
-        "proto/service.proto",
+        "grpc_proto/python_digest.proto",
     ];
 
     fs::create_dir_all(OUT_DIR).unwrap();
     tonic_build::configure()
         .build_server(true)
         .out_dir(OUT_DIR)
-        .compile(&protos, &["proto/"])?;
+        .compile(&protos, &["grpc/"])?;
 
     rerun(&protos);
 

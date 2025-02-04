@@ -12,15 +12,15 @@ pub struct ServiceResponse {
     pub output: ::prost::alloc::string::String,
 }
 /// Generated client implementations.
-pub mod my_service_client {
+pub mod digest_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
     #[derive(Debug, Clone)]
-    pub struct MyServiceClient<T> {
+    pub struct DigestClient<T> {
         inner: tonic::client::Grpc<T>,
     }
-    impl MyServiceClient<tonic::transport::Channel> {
+    impl DigestClient<tonic::transport::Channel> {
         /// Attempt to create a new client by connecting to a given endpoint.
         pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
         where
@@ -31,7 +31,7 @@ pub mod my_service_client {
             Ok(Self::new(conn))
         }
     }
-    impl<T> MyServiceClient<T>
+    impl<T> DigestClient<T>
     where
         T: tonic::client::GrpcService<tonic::body::BoxBody>,
         T::Error: Into<StdError>,
@@ -49,7 +49,7 @@ pub mod my_service_client {
         pub fn with_interceptor<F>(
             inner: T,
             interceptor: F,
-        ) -> MyServiceClient<InterceptedService<T, F>>
+        ) -> DigestClient<InterceptedService<T, F>>
         where
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
@@ -63,7 +63,7 @@ pub mod my_service_client {
                 http::Request<tonic::body::BoxBody>,
             >>::Error: Into<StdError> + Send + Sync,
         {
-            MyServiceClient::new(InterceptedService::new(inner, interceptor))
+            DigestClient::new(InterceptedService::new(inner, interceptor))
         }
         /// Compress requests with the given encoding.
         ///
@@ -114,36 +114,36 @@ pub mod my_service_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/myservice.MyService/RemoteFunction",
+                "/Digest.Digest/RemoteFunction",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("myservice.MyService", "RemoteFunction"));
+                .insert(GrpcMethod::new("Digest.Digest", "RemoteFunction"));
             self.inner.unary(req, path, codec).await
         }
     }
 }
 /// Generated server implementations.
-pub mod my_service_server {
+pub mod digest_server {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
     use tonic::codegen::*;
-    /// Generated trait containing gRPC methods that should be implemented for use with MyServiceServer.
+    /// Generated trait containing gRPC methods that should be implemented for use with DigestServer.
     #[async_trait]
-    pub trait MyService: Send + Sync + 'static {
+    pub trait Digest: Send + Sync + 'static {
         async fn remote_function(
             &self,
             request: tonic::Request<super::ServiceRequest>,
         ) -> std::result::Result<tonic::Response<super::ServiceResponse>, tonic::Status>;
     }
     #[derive(Debug)]
-    pub struct MyServiceServer<T: MyService> {
+    pub struct DigestServer<T: Digest> {
         inner: Arc<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
         max_decoding_message_size: Option<usize>,
         max_encoding_message_size: Option<usize>,
     }
-    impl<T: MyService> MyServiceServer<T> {
+    impl<T: Digest> DigestServer<T> {
         pub fn new(inner: T) -> Self {
             Self::from_arc(Arc::new(inner))
         }
@@ -194,9 +194,9 @@ pub mod my_service_server {
             self
         }
     }
-    impl<T, B> tonic::codegen::Service<http::Request<B>> for MyServiceServer<T>
+    impl<T, B> tonic::codegen::Service<http::Request<B>> for DigestServer<T>
     where
-        T: MyService,
+        T: Digest,
         B: Body + Send + 'static,
         B::Error: Into<StdError> + Send + 'static,
     {
@@ -211,10 +211,10 @@ pub mod my_service_server {
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
             match req.uri().path() {
-                "/myservice.MyService/RemoteFunction" => {
+                "/Digest.Digest/RemoteFunction" => {
                     #[allow(non_camel_case_types)]
-                    struct RemoteFunctionSvc<T: MyService>(pub Arc<T>);
-                    impl<T: MyService> tonic::server::UnaryService<super::ServiceRequest>
+                    struct RemoteFunctionSvc<T: Digest>(pub Arc<T>);
+                    impl<T: Digest> tonic::server::UnaryService<super::ServiceRequest>
                     for RemoteFunctionSvc<T> {
                         type Response = super::ServiceResponse;
                         type Future = BoxFuture<
@@ -227,7 +227,7 @@ pub mod my_service_server {
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as MyService>::remote_function(&inner, request).await
+                                <T as Digest>::remote_function(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -272,7 +272,7 @@ pub mod my_service_server {
             }
         }
     }
-    impl<T: MyService> Clone for MyServiceServer<T> {
+    impl<T: Digest> Clone for DigestServer<T> {
         fn clone(&self) -> Self {
             let inner = self.inner.clone();
             Self {
@@ -284,7 +284,7 @@ pub mod my_service_server {
             }
         }
     }
-    impl<T: MyService> tonic::server::NamedService for MyServiceServer<T> {
-        const NAME: &'static str = "myservice.MyService";
+    impl<T: Digest> tonic::server::NamedService for DigestServer<T> {
+        const NAME: &'static str = "Digest.Digest";
     }
 }

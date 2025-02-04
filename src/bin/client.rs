@@ -1,6 +1,6 @@
 use log::{info, warn,error};
-use news2tg::myservice::my_service_client::MyServiceClient;
-use news2tg::myservice::ServiceRequest;
+// use news2tg::myservice::my_service_client::MyServiceClient;
+// use news2tg::myservice::ServiceRequest;
 use tonic::transport::Channel;
 use std::time::Duration;
 use flexi_logger::{LogSpecification,LevelFilter, Duplicate, FileSpec, Logger, WriteMode, Criterion, Naming, Cleanup, detailed_format};
@@ -25,27 +25,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // .start()
     // .unwrap();
 
-    let channel = Channel::from_static("http://[::1]:50051")
-        .connect_timeout(Duration::from_secs(5))  // 设置连接超时时间
-        .timeout(Duration::from_secs(10))         // 设置调用超时时间
-        .connect()
-        .await?;
+    // let channel = Channel::from_static("http://[::1]:50051")
+    //     .connect_timeout(Duration::from_secs(5))  // 设置连接超时时间
+    //     .timeout(Duration::from_secs(10))         // 设置调用超时时间
+    //     .connect()
+    //     .await?;
     
-    let mut client = MyServiceClient::new(channel);
+    // let mut client = MyServiceClient::new(channel);
 
-    // 建立与服务器的连接
-    // let mut client: MyServiceClient<tonic::transport::Channel> = MyServiceClient::connect("http://[::1]:50051").await?;
+    // // 建立与服务器的连接
+    // // let mut client: MyServiceClient<tonic::transport::Channel> = MyServiceClient::connect("http://[::1]:50051").await?;
 
-    // 创建请求
-    let request = tonic::Request::new(ServiceRequest {
-        input: "Hello".into(),
-    });
+    // // 创建请求
+    // let request = tonic::Request::new(ServiceRequest {
+    //     input: "Hello".into(),
+    // });
 
-    // 调用远程函数
-    let response = client.remote_function(request).await?;
+    // // 调用远程函数
+    // let response = client.remote_function(request).await?;
 
-    // 打印服务器响应
-    println!("RESPONSE=\"{:?}\"", response.into_inner().output);
+    // // 打印服务器响应
+    // println!("RESPONSE=\"{:?}\"", response.into_inner().output);
 
     Ok(())
 }
