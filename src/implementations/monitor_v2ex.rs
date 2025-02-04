@@ -231,9 +231,31 @@ mod tests{
     use chrono::Utc;
     use crate::{common::config::Config, implementations::notify_tg::NotifyTelegram};
 
+
+    #[tokio::test]
+    async fn test_fetch(){
+        // let mut base_date = Utc::now().format("%Y%m%d").to_string();
+        // let mut v2ex_client=V2exClient::new(Client::new(), base_date.clone());
+        let config = &Config::from_file("myconfig.toml");
+        let client=Client::new();
+
+        let tg_client=NotifyTelegram::new(config.telegram.api_token.to_string(), config.telegram.chat_id.parse::<i64>().expect("Invalid Tg chat id"));
+        let mut monitor=MonitorV2EX::new(client,tg_client );
+        // let result=monitor.fetch_hot().await.map_err(|err| eprintln!("error: {:?}", err)).unwrap();
+
+        match monitor.fetch_hot().await{
+            Ok(result)=>{
+                println!("result is :{:?}", result.get(0));
+            },
+            Err(err)=>{
+                println!("err:{}", err);
+            }
+        };
+        // println!("result is :{:?}", result.get(0))
+    }
    
     #[tokio::test]
-    async fn test_url(){
+    async fn test_run(){
         // let mut base_date = Utc::now().format("%Y%m%d").to_string();
         // let mut v2ex_client=V2exClient::new(Client::new(), base_date.clone());
         let config = &Config::from_file("myconfig.toml");
@@ -246,6 +268,7 @@ mod tests{
         let _ = monitor.run(&config).await;
         // println!("result is :{:?}", result.get(0))
     }
+
 }
 
 

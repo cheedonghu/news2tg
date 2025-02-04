@@ -64,11 +64,11 @@ async fn main(){
     tokio::select! {
         _ = hn_task_handle => {
             // 一般来说定时任务不会自己退出，如果它退出了说明发生了某种错误或 panic
-            println!("Interval task ended unexpectedly, shutting down...");
+            println!("HackerNews Interval task ended unexpectedly, shutting down...");
         },
         _ = v2ex_task_handle => {
             // 一般来说定时任务不会自己退出，如果它退出了说明发生了某种错误或 panic
-            println!("Interval task ended unexpectedly, shutting down...");
+            println!("V2EX Interval task ended unexpectedly, shutting down...");
         },
         _ = ctrlc_task_handle => {
             println!("Ctrl+C received, shutting down...");
