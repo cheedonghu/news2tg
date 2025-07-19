@@ -24,7 +24,7 @@ pub async fn wait_for_ctrl_c() {
 }
 
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main(){
     // 解析命令行参数
     let cli = Cli::parse();
@@ -42,12 +42,16 @@ async fn main(){
     let rpc_client = DigestClient::new(channel);
     let tg_client=NotifyTelegram::new(config.telegram.api_token.to_string(), config.telegram.chat_id.parse::<i64>().expect("Invalid Tg chat id"));
     let ai_client=AIHelperDeepSeek::new(config.deepseek.api_token.to_string());
-    let http_client=Client::new();
-    let mut monitor_hn=MonitorHackerNews::new(http_client, tg_client, ai_client, rpc_client);
+    let http_client=Client::builder()
+                            .timeout(Duration::from_secs(15))
+                            .connect_timeout(Duration::from_secs(5))
+                            .build()
+                            .unwrap();
+    let mut monitor_hn=MonitorHackerNews::new(http_client.clone(), tg_client, ai_client, rpc_client);
 
     let tg_client=NotifyTelegram::new(config.telegram.api_token.to_string(), config.telegram.chat_id.parse::<i64>().expect("Invalid Tg chat id"));
-    let http_client=Client::new();
-    let mut monitor_v2ex=MonitorV2EX::new(http_client, tg_client );
+    // let http_client=Client::new();
+    let mut monitor_v2ex=MonitorV2EX::new(http_client.clone(), tg_client );
 
     let config = Config::from_file(&cli.config);
     let hn_task_handle = tokio::spawn({
