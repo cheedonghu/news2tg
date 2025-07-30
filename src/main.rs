@@ -24,7 +24,8 @@ pub async fn wait_for_ctrl_c() {
 }
 
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
+// #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::main]
 async fn main(){
     // 解析命令行参数
     let cli = Cli::parse();
@@ -32,8 +33,8 @@ async fn main(){
 
     // 初始化各大客户端
     let channel = Channel::from_static("http://[::1]:50051")
-    .connect_timeout(Duration::from_secs(5))  // 设置连接超时时间
-    .timeout(Duration::from_secs(10))         // 设置调用超时时间
+    .connect_timeout(Duration::from_secs(50))  // 设置连接超时时间
+    .timeout(Duration::from_secs(120))         // 设置调用超时时间
     .connect()
     .await
     .map_err(|err| format!(
@@ -43,8 +44,8 @@ async fn main(){
     let tg_client=NotifyTelegram::new(config.telegram.api_token.to_string(), config.telegram.chat_id.parse::<i64>().expect("Invalid Tg chat id"));
     let ai_client=AIHelperDeepSeek::new(config.deepseek.api_token.to_string());
     let http_client=Client::builder()
-                            .timeout(Duration::from_secs(15))
-                            .connect_timeout(Duration::from_secs(5))
+                            .timeout(Duration::from_secs(120))
+                            .connect_timeout(Duration::from_secs(120))
                             .build()
                             .unwrap();
     let mut monitor_hn=MonitorHackerNews::new(http_client.clone(), tg_client, ai_client, rpc_client);
