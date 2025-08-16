@@ -3,8 +3,7 @@ FROM rust:latest AS rust-builder
 WORKDIR /usr/src/news2tg
 
 # 安装git,protobuf-compiler等工具
-RUN apt-get update && apt-get install -y git && apt-get install -y protobuf-compiler
-RUN protoc --version
+RUN apt-get update && apt-get install -y git
 
 # 从GitHub克隆Rust仓库
 RUN git clone https://github.com/cheedonghu/news2tg.git .
@@ -36,9 +35,5 @@ ENV RUST_CONFIG_PATH=/config/config.toml
 # 暴露端口（其实没必要暴露）
 EXPOSE 50051
 
-# 下载 wait-for-it.sh 脚本
-RUN curl -o /usr/local/bin/wait-for-it.sh https://raw.githubusercontent.com/vishnubob/wait-for-it/master/wait-for-it.sh
-RUN chmod +x /usr/local/bin/wait-for-it.sh
-
 # 启动命令
-CMD ["sh", "-c", "python -m page_content_extractor.main & wait-for-it.sh localhost:50051 -- ./news2tg -c $RUST_CONFIG_PATH >> /logs/news2tg.log 2>&1"]
+CMD ["sh", "-c", "python -m page_content_extractor.main & ./news2tg -c $RUST_CONFIG_PATH >> /logs/news2tg.log 2>&1"]
