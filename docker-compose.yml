@@ -1,15 +1,15 @@
 services:
-  news_app:
+  news2tg:
     image: cheedonghu/news2tg:latest
-    # environment:
-    #   - RUST_CONFIG_PATH=/config/config.toml
+    container_name: news2tg
     volumes:
+      # 使用相对路径挂载本地目录（推荐）
       - ./config:/config
       - ./logs:/logs
-    # ports:
-    #   - "50051:50051"
+      #    ports:
+      # 如果需要外部访问gRPC服务，保留端口映射
+    #      - "50051:50051"
+    environment:
+      - RUST_CONFIG_PATH=/config/config.toml
+    #      - RUST_LOG=info
     restart: unless-stopped
-
-volumes:
-  config:
-  logs:
