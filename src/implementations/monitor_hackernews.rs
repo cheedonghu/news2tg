@@ -150,10 +150,6 @@ impl<N: Notify, A: AIHelper> MonitorHackerNews<N,A> {
     async fn get_digest_from_python(&mut self, origin_news_url: &str)-> Result<String, Box<dyn Error>>{
         println!("{} 开始获取源网址摘要", Local::now().format("%Y年%m月%d日 %H:%M:%S"));
         // 创建请求
-        // let request = tonic::Request::new( ServiceRequest{
-        //     input: origin_news_url.to_string(),
-        // });
-        // 方法2: 使用HashMap作为查询参数
         let mut params = HashMap::new();
         params.insert("newsUrl", origin_news_url);
 
@@ -166,31 +162,6 @@ impl<N: Notify, A: AIHelper> MonitorHackerNews<N,A> {
             .await.unwrap()
             .text().map_err(|err| News2tgError::RuntimeError("提取摘要文本失败".to_string())).await.unwrap();
         return Ok(response);
-
-
-        // let response2 = http_client
-        //     .get("https://httpbin.org/get")
-        //     .query(&params)
-        //     .send()
-        //     .await?;
-
-        // println!("HashMap参数响应: {}", response2.text().await?);
-
-        // 调用远程函数
-        // match self.digest_client.remote_function(request).await {
-        //     Ok(response) => {
-        //         let digest=response.into_inner().output;
-        //         // 打印服务器响应
-        //         println!("{} 调用python网页摘要接口结果：\"{:?}\"", Local::now().format("%Y年%m月%d日 %H:%M:%S"),digest);
-        //         // 返回结果
-        //         Ok(digest)
-        //     },
-        //     Err(e) => {
-        //         // error!("调用gRPC失败: {:?}", e);
-        //         println!("{} 调用python网页摘要接口失败", Local::now().format("%Y年%m月%d日 %H:%M:%S"));
-        //         Err(Box::new(e))
-        //     },
-        // }
     }
 
     /// 根据hacker news帖子id解析网页获取相关数据和网页摘要
