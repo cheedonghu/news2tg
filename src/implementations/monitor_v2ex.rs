@@ -1,24 +1,21 @@
-use std::error::Error;
-use reqwest::Client;
-use async_trait::async_trait;
-use crate::tokio::sync::RwLock;
 use std::collections::HashMap;
-use crate::traits::monitor::Monitor;
-
-use crate::common::models::{News2tgError, Topic,News2tgNotifyBase};
-use crate::traits::news2tg::News2tg;
-use crate::common::config::Config;
-use crate::common::tools;
-use chrono::Utc;
-use chrono::FixedOffset;
-use chrono::{Local,DateTime};
-use crate::ChronoDuration;
+use std::error::Error;
 use std::time::Duration;
+
+use async_trait::async_trait;
+use chrono::{DateTime, Local};
+use reqwest::Client;
 use tokio::time::interval;
 
+use crate::ChronoDuration;
+use crate::common::config::Config;
+use crate::common::models::{News2tgError, News2tgNotifyBase, Topic};
+use crate::common::tools;
+use crate::tokio::sync::RwLock;
 use crate::traits::ai_helper::AIHelper;
+use crate::traits::monitor::Monitor;
+use crate::traits::news2tg::News2tg;
 use crate::traits::notify::Notify;
-
 
 // 定义 MonitorV2EXError
 #[derive(Debug)]
@@ -166,8 +163,13 @@ impl<N: Notify+ Send + Sync> News2tg for MonitorV2EX<N> {
                 let mut output=News2tgNotifyBase::default();
 
                 let title=tools::truncate_utf8(&topic.title, 4000);
+                if !config.features.v2ex_fetch_latest_keyword.is_empty()
+                    && !config.features.v2ex_fetch_latest_keyword.iter().any(|keyword| title.contains(keyword)) {
+                    // 当有关键字过滤，却匹配不到关键字时，直接跳过此条记录
+                    // eprintln!("当前标题:{}未包含关键字；跳过", title);
+                    continue;
+                }
                 let content_title=tools::escape_markdown_v2(&title);
-                // message.push_str(&format!("*{}*: [{}]({})\n",section_title, topic.title, topic.url));
                 output.set_title(title);
                 output.set_content(format!("*{}*: [{}]({})\n",new_title, content_title, &topic.url));
                 output.set_url((&topic.url).to_string());
@@ -226,11 +228,9 @@ impl<N: Notify+ Send + Sync> News2tg for MonitorV2EX<N> {
 
 #[cfg(test)]
 mod tests{
-
-    use super::*;
-    use chrono::Utc;
     use crate::{common::config::Config, implementations::notify_tg::NotifyTelegram};
 
+    use super::*;
 
     #[tokio::test]
     async fn test_fetch(){
