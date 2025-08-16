@@ -1,20 +1,19 @@
-mod grpc;
+use chrono::Duration as ChronoDuration;
+use chrono::prelude::*;
+use clap::Parser;
+use reqwest::Client;
+use tokio;
+use tokio::time::Duration;
+
+use implementations::*;
+use traits::news2tg::News2tg;
+
+use crate::common::config::Cli;
+use crate::common::config::Config;
+
 mod traits;
 mod implementations;
 mod common;
-
-use crate::common::config::Config;
-use crate::common::config::Cli;
-use clap::Parser;
-use implementations::*;
-use tokio;
-use reqwest::Client;
-use tokio::time::Duration;
-use chrono::prelude::*;
-use chrono::Duration as ChronoDuration;
-use traits::news2tg::News2tg;
-use tonic::transport::Channel;
-use crate::grpc::digest::digest_client::DigestClient;
 
 pub async fn wait_for_ctrl_c() {
     tokio::signal::ctrl_c()
@@ -32,23 +31,14 @@ async fn main(){
     let config = Config::from_file(&cli.config);
 
     // 初始化各大客户端
-    let channel = Channel::from_static("http://[::1]:50051")
-    .connect_timeout(Duration::from_secs(50))  // 设置连接超时时间
-    .timeout(Duration::from_secs(120))         // 设置调用超时时间
-    .connect()
-    .await
-    .map_err(|err| format!(
-        "与python工程摘要接口建立连接失败: {:?}",err))
-    .unwrap();
-    let rpc_client = DigestClient::new(channel);
     let tg_client=NotifyTelegram::new(config.telegram.api_token.to_string(), config.telegram.chat_id.parse::<i64>().expect("Invalid Tg chat id"));
     let ai_client=AIHelperDeepSeek::new(config.deepseek.api_token.to_string());
     let http_client=Client::builder()
-                            .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(5 * 60))
                             .connect_timeout(Duration::from_secs(120))
                             .build()
                             .unwrap();
-    let mut monitor_hn=MonitorHackerNews::new(http_client.clone(), tg_client, ai_client, rpc_client);
+    let mut monitor_hn = MonitorHackerNews::new(http_client.clone(), tg_client, ai_client);
 
     let tg_client=NotifyTelegram::new(config.telegram.api_token.to_string(), config.telegram.chat_id.parse::<i64>().expect("Invalid Tg chat id"));
     // let http_client=Client::new();
