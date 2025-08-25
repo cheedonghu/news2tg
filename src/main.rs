@@ -23,7 +23,6 @@ pub async fn wait_for_ctrl_c() {
 }
 
 
-// #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 #[tokio::main]
 async fn main(){
     // 解析命令行参数
