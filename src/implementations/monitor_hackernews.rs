@@ -158,9 +158,12 @@ impl<N: Notify, A: AIHelper> MonitorHackerNews<N,A> {
             .get("http://127.0.0.1:50051/digest")
             .query(&params)
             .send()
-            .map_err(|err| News2tgError::RuntimeError("调用python接口获取帖子摘要失败".to_string()))
-            .await.unwrap()
-            .text().map_err(|err| News2tgError::RuntimeError("提取摘要文本失败".to_string())).await.unwrap();
+            .await
+            .map_err(|_err| News2tgError::RuntimeError("调用 python 接口获取帖子摘要失败".to_string()))?
+            .text()
+            .await
+            .map_err(|_err| News2tgError::RuntimeError("提取摘要文本失败".to_string()))?;
+
         return Ok(response);
     }
 
@@ -281,12 +284,26 @@ where A: AIHelper<Output = String>
         let mut hot_topics: Vec<String>=Vec::new();
         let mut new_topics: Vec<String>=Vec::new();
         if config.features.hn_fetch_top{
-            hot_topics=self.fetch_hot().await.unwrap().into();
+            // hot_topics=self.fetch_hot().await.unwrap().into();
+            match self.fetch_hot().await {
+                Ok(topics) => hot_topics = topics.into(),
+                Err(e) => {
+                    eprintln!("hackernews fetch_hot error: {:?}", e);
+                    // 出错时跳过，不panic
+                }
+            }
             // 根据配置处理前n个帖子
             hot_topics=hot_topics.iter().take(config.features.hn_fetch_num.clone()).cloned().collect();
         }
         if config.features.hn_fetch_latest{
-            new_topics=self.fetch_new().await.unwrap().into();
+            // new_topics=self.fetch_new().await.unwrap().into();
+            match self.fetch_new().await {
+                Ok(topics) => new_topics = topics.into(),
+                Err(e) => {
+                    eprintln!("hackernews fetch_hot error: {:?}", e);
+                    // 出错时跳过，不panic
+                }
+            }
             new_topics=new_topics.iter().take(config.features.hn_fetch_num.clone()).cloned().collect();
         }
         let hot_title="Hacker News 热帖推送";
@@ -356,7 +373,7 @@ where A: AIHelper<Output = String>
     async fn run(&mut self, config: &Config) -> Result<(), News2tgError> {
     
         // 创建一个 5min 的周期定时器，可自行调整
-        let mut main_ticker = interval(Duration::from_secs(1*5));
+        let mut main_ticker = interval(Duration::from_secs(60 * 5));
 
         loop {
             main_ticker.tick().await;

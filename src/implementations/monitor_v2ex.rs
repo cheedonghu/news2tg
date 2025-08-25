@@ -128,10 +128,23 @@ impl<N: Notify+ Send + Sync> News2tg for MonitorV2EX<N> {
         let mut hot_topics: Vec<Topic>=Vec::new();
         let mut new_topics: Vec<Topic>=Vec::new();
         if config.features.v2ex_fetch_hot{
-            hot_topics=self.fetch_hot().await.unwrap().into();
-        }
+            match self.fetch_hot().await {
+                Ok(topics) => hot_topics = topics.into(),
+                Err(e) => {
+                    eprintln!("fetch_hot error: {:?}", e);
+                    // 出错时跳过，不panic
+                }
+            }
+        };
         if config.features.v2ex_fetch_latest{
-            new_topics=self.fetch_new().await.unwrap().into();
+            // new_topics=self.fetch_new().await.unwrap().into();
+            match self.fetch_new().await {
+                Ok(topics) => new_topics = topics.into(),
+                Err(e) => {
+                    eprintln!("fetch_hot error: {:?}", e);
+                    // 出错时跳过，不panic
+                }
+            }
         }
         // 获取的帖子
         // let topics: Vec<Topic>=hot_topics.into_iter()
