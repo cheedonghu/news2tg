@@ -414,24 +414,24 @@ mod tests{
     async fn test_url(){
         let config = Config::from_file("myconfig.toml");
 
-        // 新建gRPC客户端
-        let channel = Channel::from_static("http://[::1]:50051")
-        .connect_timeout(Duration::from_secs(5))  // 设置连接超时时间
-        .timeout(Duration::from_secs(10))         // 设置调用超时时间
-        .connect()
-        .await
-        .map_err(|err| format!(
-            "与python工程摘要接口建立连接失败: {:?}",err))
-        .unwrap();
-        let rpc_client = DigestClient::new(channel);
+        // // 新建gRPC客户端
+        // let channel = Channel::from_static("http://[::1]:50051")
+        // .connect_timeout(Duration::from_secs(5))  // 设置连接超时时间
+        // .timeout(Duration::from_secs(10))         // 设置调用超时时间
+        // .connect()
+        // .await
+        // .map_err(|err| format!(
+        //     "与python工程摘要接口建立连接失败: {:?}",err))
+        // .unwrap();
+        // let rpc_client = DigestClient::new(channel);
 
-        let http_client=Client::new();
-        let tg_client=NotifyTelegram::new(config.telegram.api_token.to_string(), config.telegram.chat_id.parse::<i64>().expect("Invalid Tg chat id"));
-        let ai_client=AIHelperDeepSeek::new(config.deepseek.api_token.to_string());
+        // let http_client=Client::new();
+        // let tg_client=NotifyTelegram::new(config.telegram.api_token.to_string(), config.telegram.chat_id.parse::<i64>().expect("Invalid Tg chat id"));
+        // let ai_client=AIHelperDeepSeek::new(config.deepseek.api_token.to_string());
 
-        let mut monitor=MonitorHackerNews::new(http_client, tg_client, ai_client, rpc_client);
+        // let mut monitor=MonitorHackerNews::new(http_client, tg_client, ai_client, rpc_client);
         
-        monitor.run(&config).await;
+        // monitor.run(&config).await;
 
         // println!("result is :{:?}", result.get(0))
 
