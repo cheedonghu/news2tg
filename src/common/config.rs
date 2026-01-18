@@ -21,6 +21,8 @@ pub struct Features {
     pub v2ex_fetch_latest: bool,
     /// 新帖推送关键字过滤
     pub v2ex_fetch_latest_keyword: Vec<String>,
+    /// 新帖推送节点过滤
+    pub v2ex_fetch_latest_node_name: Vec<String>,
     /// 热帖推送开关
     pub v2ex_fetch_hot: bool,
     /// hacker news top贴推送开关

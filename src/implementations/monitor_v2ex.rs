@@ -7,7 +7,6 @@ use chrono::{DateTime, Local};
 use reqwest::Client;
 use tokio::time::interval;
 
-use crate::ChronoDuration;
 use crate::common::config::Config;
 use crate::common::models::{News2tgError, News2tgNotifyBase, Topic};
 use crate::common::tools;
@@ -16,6 +15,7 @@ use crate::traits::ai_helper::AIHelper;
 use crate::traits::monitor::Monitor;
 use crate::traits::news2tg::News2tg;
 use crate::traits::notify::Notify;
+use crate::ChronoDuration;
 
 // 定义 MonitorV2EXError
 #[derive(Debug)]
@@ -176,10 +176,8 @@ impl<N: Notify+ Send + Sync> News2tg for MonitorV2EX<N> {
                 let mut output=News2tgNotifyBase::default();
 
                 let title=tools::truncate_utf8(&topic.title, 4000);
-                if !config.features.v2ex_fetch_latest_keyword.is_empty()
-                    && !config.features.v2ex_fetch_latest_keyword.iter().any(|keyword| title.contains(keyword)) {
-                    // 当有关键字过滤，却匹配不到关键字时，直接跳过此条记录
-                    // eprintln!("当前标题:{}未包含关键字；跳过", title);
+                if !filter_new_topic(&topic, &config) {
+                    // println!("{}不满足过滤条件；跳过", &topic.url);
                     continue;
                 }
                 let content_title=tools::escape_markdown_v2(&title);
@@ -235,6 +233,19 @@ impl<N: Notify+ Send + Sync> News2tg for MonitorV2EX<N> {
         }
     }
     
+}
+
+/// 允许推送的过滤器校验，满足一项条件即可
+/// 1. 标题包含关键字
+/// 2. 节点名称在感兴趣节点列表v2ex_fetch_latest_node_name
+pub fn filter_new_topic(topic: &Topic, config: &Config) -> bool {
+    let title = tools::truncate_utf8(&topic.title, 4000).to_lowercase();
+    let node_name = &topic.node.name;
+    // 标题包含关键字通过条件-> 标题为空直接通过or标题不为空时标题包含关键字
+    let title_has_keyword: bool = config.features.v2ex_fetch_latest_keyword.is_empty() || config.features.v2ex_fetch_latest_keyword.iter().any(|keyword| title.contains(keyword));
+    // 节点名称在感兴趣节点列表通过条件-> 节点配置列表为空 or 配置列表包含节点名称
+    let node_included: bool = config.features.v2ex_fetch_latest_node_name.is_empty() || config.features.v2ex_fetch_latest_node_name.iter().any(|node| node.eq(node_name));
+    return title_has_keyword || node_included;
 }
 
 
