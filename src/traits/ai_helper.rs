@@ -1,9 +1,9 @@
-use async_trait::async_trait;
 use crate::common::models::News2tgError;
+use async_trait::async_trait;
 
 // 定义 Monitor trait
 #[async_trait]
-pub trait AIHelper: Send + Sync{
+pub trait AIHelper: Send + Sync {
     // 关联类型，用于指定 fetch_hot 和 fetch_new 返回的成功结果类型
     type Output;
 

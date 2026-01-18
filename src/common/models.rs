@@ -1,9 +1,8 @@
+use getset::{Getters, MutGetters, Setters};
 use serde::Deserialize;
-use tokio::sync::RwLock;
 use std::collections::HashMap;
 use std::error::Error;
-use getset::{CopyGetters, Getters, MutGetters, Setters};
-
+use tokio::sync::RwLock;
 
 /// 自定义错误
 #[derive(Debug)]
@@ -50,8 +49,6 @@ pub struct News2tgNotifyBase {
     #[getset(get = "pub", set = "pub", get_mut = "pub")]
     content_transfered_by_ai_flag: bool,
 }
-
-
 
 /// v2ex响应结构
 #[derive(Deserialize, Debug)]
@@ -112,19 +109,17 @@ pub struct Topic {
     pub id: u64,
 }
 
-
 /// 程序共享变量
-pub struct SharedItem{
-    pub v2ex_pushed_urls: RwLock<HashMap<String,String>>,
-    pub hackernews_pushed_urls: RwLock<HashMap<String,String>>
+pub struct SharedItem {
+    pub v2ex_pushed_urls: RwLock<HashMap<String, String>>,
+    pub hackernews_pushed_urls: RwLock<HashMap<String, String>>,
 }
 
 impl SharedItem {
-    pub fn new() -> SharedItem{
-        SharedItem{
+    pub fn new() -> SharedItem {
+        SharedItem {
             v2ex_pushed_urls: RwLock::new(HashMap::new()),
-            hackernews_pushed_urls: RwLock::new(HashMap::new())
+            hackernews_pushed_urls: RwLock::new(HashMap::new()),
         }
     }
 }
-

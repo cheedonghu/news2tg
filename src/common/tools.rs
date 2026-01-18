@@ -1,9 +1,8 @@
-use std::fs::File;
-use std::io::{Write,Result,Read};
-use std::collections::HashMap;
-use std::fs::OpenOptions;
 use crate::common::models::Topic;
-
+use std::collections::HashMap;
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::io::{Read, Result, Write};
 
 /// 以utf8格式进行字符分割
 pub fn truncate_utf8(s: &str, max_chars: usize) -> String {
@@ -12,7 +11,9 @@ pub fn truncate_utf8(s: &str, max_chars: usize) -> String {
 
 pub fn escape_markdown_v2(text: &str) -> String {
     // Define the characters that need to be escaped in Markdown V2
-    let escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
+    let escape_chars = [
+        '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!',
+    ];
     let mut escaped_text = String::new();
 
     // Iterate over each character in the input text
@@ -27,8 +28,7 @@ pub fn escape_markdown_v2(text: &str) -> String {
     escaped_text
 }
 
-
-pub fn write_content_to_file(section_title: &str, content: &str,append: bool) -> Result<()> {
+pub fn write_content_to_file(section_title: &str, content: &str, append: bool) -> Result<()> {
     let file = if append {
         OpenOptions::new().append(true).open("output.txt")?
     } else {
@@ -44,18 +44,21 @@ pub fn write_content_to_file(section_title: &str, content: &str,append: bool) ->
 }
 
 pub fn read_content_from_file() -> Result<String> {
-    let mut file = File::open("output.txt")?;  // 打开文件
-    let mut content = String::new();           // 创建一个空的 String
-    file.read_to_string(&mut content)?;        // 将文件内容读入到 String 中
-    Ok(content)                                // 返回内容
+    let mut file = File::open("output.txt")?; // 打开文件
+    let mut content = String::new(); // 创建一个空的 String
+    file.read_to_string(&mut content)?; // 将文件内容读入到 String 中
+    Ok(content) // 返回内容
 }
 
-
-pub fn write_topics_to_file(section_title: &str, topics: &[Topic], pushed_urls: &HashMap<String, String>) -> Result<()> {
+pub fn write_topics_to_file(
+    section_title: &str,
+    topics: &[Topic],
+    pushed_urls: &HashMap<String, String>,
+) -> Result<()> {
     let mut file = File::create("output.txt")?;
     writeln!(file, "{}:", section_title)?;
     for topic in topics {
-        if !pushed_urls.contains_key(&topic.url){
+        if !pushed_urls.contains_key(&topic.url) {
             writeln!(file, "ID: {}", topic.id)?;
             writeln!(file, "Title: {}", topic.title)?;
             writeln!(file, "URL: {}", topic.url)?;
@@ -165,7 +168,6 @@ pub fn write_topics_to_file(section_title: &str, topics: &[Topic], pushed_urls: 
 //     let mut text_content = String::new();
 //     let document = Html::parse_document(&content);
 
-
 //     // 遍历每个元素，提取其文本
 //     for element in document.select(&selector) {
 //         if let Some(text) = element.text().next() {
@@ -185,7 +187,6 @@ pub fn write_topics_to_file(section_title: &str, topics: &[Topic], pushed_urls: 
 
 //     Ok(text_content)
 // }
-
 
 // pub fn tokenize(s: &str) -> Vec<String> {
 //     let ascii_patt = Regex::new(r"([\x00-\xFF]+)").unwrap();
@@ -233,16 +234,10 @@ pub fn write_topics_to_file(section_title: &str, topics: &[Topic], pushed_urls: 
 //     lcs_length(needle_tokens, haystack_tokens) as f64 / cached_tokenize(&needle).len() as f64
 // }
 
-
-
 #[cfg(test)]
-mod tests{
+mod tests {
 
-    // use super::*;
-    use std::io::Result;
     // use std::fs::File;
-
-
 
     // #[test]
     // fn test_truncate_html() -> Result<()>{

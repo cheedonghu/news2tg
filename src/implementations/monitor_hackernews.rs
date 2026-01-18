@@ -7,19 +7,18 @@ use futures::TryFutureExt;
 use reqwest::Client;
 use scraper::{Html, Selector};
 use tokio::time::interval;
-use tonic::transport::Channel;
 
-use crate::ChronoDuration;
 use crate::common::config::Config;
 use crate::common::models::{News2tgError, News2tgNotifyBase};
 use crate::common::tools;
-use crate::DateTime;
-use crate::Local;
 use crate::tokio::sync::RwLock;
 use crate::traits::ai_helper::AIHelper;
 use crate::traits::monitor::Monitor;
 use crate::traits::news2tg::News2tg;
 use crate::traits::notify::Notify;
+use crate::ChronoDuration;
+use crate::DateTime;
+use crate::Local;
 
 // 定义 MonitorHackerNewsError
 #[derive(Debug)]
@@ -46,10 +45,9 @@ pub struct MonitorHackerNews<N: Notify, A: AIHelper> {
     ai_client: A,
 }
 
-
-impl<N: Notify, A: AIHelper> MonitorHackerNews<N,A> {
+impl<N: Notify, A: AIHelper> MonitorHackerNews<N, A> {
     pub fn new(http_client: Client, notify_client: N, ai_client: A) -> Self {
-        MonitorHackerNews{
+        MonitorHackerNews {
             http_client: http_client,
             pushed_urls: RwLock::new(HashMap::new()),
             notify_client,
@@ -91,7 +89,6 @@ impl<N: Notify, A: AIHelper> MonitorHackerNews<N,A> {
         false
     }
 
-    
     /// 从hacker news的comment页面中提取出源网址： 在titleline的href内
     pub fn get_news_origin_url(&self, response:&str) -> Result<String,Box<dyn Error>>{
         println!("{} 开始解析源网址", Local::now().format("%Y年%m月%d日 %H:%M:%S"));
@@ -100,16 +97,16 @@ impl<N: Notify, A: AIHelper> MonitorHackerNews<N,A> {
         // let response=self.client.get(url).send().await?.text().await?;
         // Parse the HTML
         let document = Html::parse_document(response);
-        let selector = Selector::parse("span.titleline a").unwrap();
+        let selector = Selector::parse("span.titleline a")?;
 
         // Extract the link
         if let Some(element) = document.select(&selector).next() {
             if let Some(href) = element.value().attr("href") {
                 println!("识别到的源网址为: {}", href);
                 // 要保证是http格式
-                if href.starts_with("http") || href.starts_with("https"){
-                    news_url=String::from(href);
-                }else{
+                if href.starts_with("http") || href.starts_with("https") {
+                    news_url = String::from(href);
+                } else {
                     println!("识别到的源网址格式异常");
                 }
             } else {
@@ -118,7 +115,7 @@ impl<N: Notify, A: AIHelper> MonitorHackerNews<N,A> {
         } else {
             println!("span.titleline a 没找到对应内容");
         }
-        
+
         Ok(news_url)
     }
 
@@ -168,8 +165,8 @@ impl<N: Notify, A: AIHelper> MonitorHackerNews<N,A> {
     }
 
     /// 根据hacker news帖子id解析网页获取相关数据和网页摘要
-    async fn process(&mut self, id: String, time_gape: usize) -> Option<News2tgNotifyBase>{
-        if self.pushed_urls.read().await.contains_key(&id){
+    async fn process(&mut self, id: String, time_gape: usize) -> Option<News2tgNotifyBase> {
+        if self.pushed_urls.read().await.contains_key(&id) {
             // 已推送的不处理
             println!("当前id:{} 已推送", id);
             return Option::None;
@@ -187,21 +184,24 @@ impl<N: Notify, A: AIHelper> MonitorHackerNews<N,A> {
         // 仅创建时间不算短的才继续解析推送否则推送频率太高
         if !self.judge_news_date(&response, time_gape) {
             // 不满足要求，当前url跳过
-            return Option::None;
+            return None;
         }
 
         // ai总结：1. 获取源信息url 2.获取url链接内容 3.发送给大模型进行总结
-        let origin_news_url=self.get_news_origin_url(&response).unwrap();
+        let origin_news_url = match self.get_news_origin_url(&response) {
+            Ok(url) => { url }
+            Err(_) => return None
+        };
 
         // 从python那边获取网页摘要 摘要后续可以改为接口
-        let mut output=News2tgNotifyBase::default();
+        let mut output = News2tgNotifyBase::default();
         match self.get_digest_from_python(&origin_news_url).await {
             Ok(digest) => {
                 output.set_url(url);
                 output.set_origin_url(origin_news_url);
                 output.set_content(digest);
                 output.set_content_transfered_by_ai_flag(true);
-            },
+            }
             Err(err) => {
                 eprintln!("网页摘要获取失败，原因：{}", err);
                 output.set_url(url);
@@ -209,7 +209,7 @@ impl<N: Notify, A: AIHelper> MonitorHackerNews<N,A> {
                 // 无需ai翻译
                 output.set_content_transfered_by_ai_flag(false);
                 output.set_content("网页摘要获取失败".to_string());
-            },
+            }
         }
 
         // 过滤完成，推送保存
@@ -220,70 +220,100 @@ impl<N: Notify, A: AIHelper> MonitorHackerNews<N,A> {
 
 // 实现 Monitor trait for MonitorHackerNews
 #[async_trait]
-impl<N: Notify+ Send + Sync, A: AIHelper+Send+Sync> Monitor for MonitorHackerNews<N,A> {
+impl<N: Notify + Send + Sync, A: AIHelper + Send + Sync> Monitor for MonitorHackerNews<N, A> {
     type Output = Vec<String>;
     type MonitorError = MonitorHackerNewsError;
 
     async fn fetch_hot(&self) -> Result<Self::Output, Self::MonitorError> {
         let url = "https://hacker-news.firebaseio.com/v0/topstories.json?print=pretty";
 
-        let result = match self.http_client.get(url).header("User-Agent", "PostmanRuntime/7.37.3").send().await{
-            Ok(resp)=> match resp.json::<Vec<u64>>().await{
-                Ok(json)=>{
-                    let string_array: Vec<String> =json.iter().map(|&i| i.to_string()).collect();
+        let result = match self
+            .http_client
+            .get(url)
+            .header("User-Agent", "PostmanRuntime/7.37.3")
+            .send()
+            .await
+        {
+            Ok(resp) => match resp.json::<Vec<u64>>().await {
+                Ok(json) => {
+                    let string_array: Vec<String> = json.iter().map(|&i| i.to_string()).collect();
                     string_array
-                },
+                }
                 Err(err) => {
-                    eprintln!("Parse HackerNews's hot content response to json failed: {:?}", err);
-                    return Err(MonitorHackerNewsError::ParseError("Parse HackerNews's response to json failed".to_string()))
+                    eprintln!(
+                        "Parse HackerNews's hot content response to json failed: {:?}",
+                        err
+                    );
+                    return Err(MonitorHackerNewsError::ParseError(
+                        "Parse HackerNews's response to json failed".to_string(),
+                    ));
                 }
             },
-            Err(err)=>{
+            Err(err) => {
                 eprintln!("Fetch HackerNews's hot content response failed: {:?}", err);
-                return Err(MonitorHackerNewsError::NetworkError("Fetch HackerNews's response failed".to_string()))
+                return Err(MonitorHackerNewsError::NetworkError(
+                    "Fetch HackerNews's response failed".to_string(),
+                ));
             }
         };
-        
+
         Ok(result)
     }
 
     async fn fetch_new(&self) -> Result<Self::Output, Self::MonitorError> {
         let url = "https://hacker-news.firebaseio.com/v0/newstories.json?print=pretty";
 
-        let result = match self.http_client.get(url).header("User-Agent", "PostmanRuntime/7.37.3").send().await{
-            Ok(resp)=> match resp.json::<Vec<u64>>().await{
-                Ok(json)=>{
-                    let string_array: Vec<String> =json.iter().map(|&i| i.to_string()).collect();
+        let result = match self
+            .http_client
+            .get(url)
+            .header("User-Agent", "PostmanRuntime/7.37.3")
+            .send()
+            .await
+        {
+            Ok(resp) => match resp.json::<Vec<u64>>().await {
+                Ok(json) => {
+                    let string_array: Vec<String> = json.iter().map(|&i| i.to_string()).collect();
                     string_array
-                },
+                }
                 Err(err) => {
-                    eprintln!("Parse HackerNews's newest content response to json failed: {:?}", err);
-                    return Err(MonitorHackerNewsError::ParseError("Parse HackerNews's response to json failed".to_string()))
+                    eprintln!(
+                        "Parse HackerNews's newest content response to json failed: {:?}",
+                        err
+                    );
+                    return Err(MonitorHackerNewsError::ParseError(
+                        "Parse HackerNews's response to json failed".to_string(),
+                    ));
                 }
             },
-            Err(err)=>{
-                eprintln!("Fetch HackerNews's newest content response failed: {:?}", err);
-                return Err(MonitorHackerNewsError::NetworkError("Fetch HackerNews's response failed".to_string()))
+            Err(err) => {
+                eprintln!(
+                    "Fetch HackerNews's newest content response failed: {:?}",
+                    err
+                );
+                return Err(MonitorHackerNewsError::NetworkError(
+                    "Fetch HackerNews's response failed".to_string(),
+                ));
             }
         };
-        
+
         Ok(result)
     }
 }
 
 #[async_trait]
-impl<N: Notify+ Send + Sync, A: AIHelper+Send+Sync> News2tg for MonitorHackerNews<N,A> 
-where A: AIHelper<Output = String>
+impl<N: Notify + Send + Sync, A: AIHelper + Send + Sync> News2tg for MonitorHackerNews<N, A>
+where
+    A: AIHelper<Output=String>,
 {
     type Param = ();
     type Output = Vec<News2tgNotifyBase>;
 
     /// 按配置文件中的规则调用monitor接口获取需要的内容
-    async fn fetch(&mut self, config: &Config) -> Result<Self::Output, News2tgError>{
-        let mut result:Vec<News2tgNotifyBase>=Vec::new();
-        let mut hot_topics: Vec<String>=Vec::new();
-        let mut new_topics: Vec<String>=Vec::new();
-        if config.features.hn_fetch_top{
+    async fn fetch(&mut self, config: &Config) -> Result<Self::Output, News2tgError> {
+        let mut result: Vec<News2tgNotifyBase> = Vec::new();
+        let mut hot_topics: Vec<String> = Vec::new();
+        let mut new_topics: Vec<String> = Vec::new();
+        if config.features.hn_fetch_top {
             // hot_topics=self.fetch_hot().await.unwrap().into();
             match self.fetch_hot().await {
                 Ok(topics) => hot_topics = topics.into(),
@@ -293,9 +323,13 @@ where A: AIHelper<Output = String>
                 }
             }
             // 根据配置处理前n个帖子
-            hot_topics=hot_topics.iter().take(config.features.hn_fetch_num.clone()).cloned().collect();
+            hot_topics = hot_topics
+                .iter()
+                .take(config.features.hn_fetch_num.clone())
+                .cloned()
+                .collect();
         }
-        if config.features.hn_fetch_latest{
+        if config.features.hn_fetch_latest {
             // new_topics=self.fetch_new().await.unwrap().into();
             match self.fetch_new().await {
                 Ok(topics) => new_topics = topics.into(),
@@ -304,22 +338,31 @@ where A: AIHelper<Output = String>
                     // 出错时跳过，不panic
                 }
             }
-            new_topics=new_topics.iter().take(config.features.hn_fetch_num.clone()).cloned().collect();
+            new_topics = new_topics
+                .iter()
+                .take(config.features.hn_fetch_num.clone())
+                .cloned()
+                .collect();
         }
-        let hot_title="Hacker News 热帖推送";
-        let new_title="Hacker News 新帖推送";
+        // 获取的帖子
+        // let topics: Vec<Topic>=hot_topics.into_iter()
+        // .chain(new_topics.into_iter())
+        // .collect();
+
+        let hot_title = "Hacker News 热帖推送";
+        let new_title = "Hacker News 新帖推送";
 
         // 处理热帖
-        for id in hot_topics{
-            if let Some(mut output) = self.process(id, config.features.hn_fetch_time_gap).await{
+        for id in hot_topics {
+            if let Some(mut output) = self.process(id, config.features.hn_fetch_time_gap).await {
                 output.set_title(hot_title.to_string());
                 result.push(output);
             }
         }
 
         // 处理新帖
-        for id in new_topics{
-            if let Some(mut output) = self.process(id, config.features.hn_fetch_time_gap).await{
+        for id in new_topics {
+            if let Some(mut output) = self.process(id, config.features.hn_fetch_time_gap).await {
                 output.set_title(new_title.to_string());
                 result.push(output);
             }
@@ -328,41 +371,62 @@ where A: AIHelper<Output = String>
         Ok(result)
     }
 
-    async fn ai_transfer(&mut self, output_list: Self::Output) -> Result<Self::Output, News2tgError>{
+    async fn ai_transfer(
+        &mut self,
+        output_list: Self::Output,
+    ) -> Result<Self::Output, News2tgError> {
         // Implementation here
-        let mut result:Vec<News2tgNotifyBase>= Vec::new();
+        let mut result: Vec<News2tgNotifyBase> = Vec::new();
         // 将需要ai翻译的拿出来
-        for mut output in output_list{
-            if !*output.content_transfered_by_ai_flag(){
+        for mut output in output_list {
+            if !*output.content_transfered_by_ai_flag() {
                 // 无需AI翻译，直接格式化
-                let format = format!("*{}*: \n Comment Site:{}\n\n {}\n\n[{}]({})\n", 
-                output.title(),
-                tools::escape_markdown_v2(&output.url()), 
-                format!("AI总结: {}", tools::escape_markdown_v2(&tools::truncate_utf8(&output.content(), 2000))),
-                "源内容网页: ", tools::escape_markdown_v2(&output.origin_url()));
+                let format = format!(
+                    "*{}*: \n Comment Site:{}\n\n {}\n\n[{}]({})\n",
+                    output.title(),
+                    tools::escape_markdown_v2(&output.url()),
+                    format!(
+                        "AI总结: {}",
+                        tools::escape_markdown_v2(&tools::truncate_utf8(&output.content(), 2000))
+                    ),
+                    "源内容网页: ",
+                    tools::escape_markdown_v2(&output.origin_url())
+                );
                 output.set_content(format);
-            }else {
+            } else {
                 // 需要AI总结
-                let content_transfered_by_ai: String=self.ai_client
-                .summarize(output.content().to_string()).await.unwrap();
-                let format = format!("*{}*: \n Comment Site:{}\n\n {}\n\n[{}]({})\n", 
-                output.title(),
-                tools::escape_markdown_v2(&output.url()), 
-                format!("AI总结: {}", tools::escape_markdown_v2(&content_transfered_by_ai)),
-                "源内容网页: ", tools::escape_markdown_v2(&output.origin_url()));
+                let content_transfered_by_ai: String =
+                    match self.ai_client.summarize(output.content().to_string()).await {
+                        Ok(s) => s,
+                        Err(err) => {
+                            eprintln!("HN AI 摘要失败: {:?}", err);
+                            "AI摘要失败".to_string()
+                        }
+                    };
+                let format = format!(
+                    "*{}*: \n Comment Site:{}\n\n {}\n\n[{}]({})\n",
+                    output.title(),
+                    tools::escape_markdown_v2(&output.url()),
+                    format!(
+                        "AI总结: {}",
+                        tools::escape_markdown_v2(&content_transfered_by_ai)
+                    ),
+                    "源内容网页: ",
+                    tools::escape_markdown_v2(&output.origin_url())
+                );
                 output.set_content(format);
             }
             result.push(output);
         }
- 
+
         Ok(result)
     }
 
-    async fn notify(&mut self, param: Self::Output) -> Result<bool, News2tgError>{
+    async fn notify(&mut self, param: Self::Output) -> Result<bool, News2tgError> {
         // let content:&Vec<News2tgNotifyBase> = param;
         // Implementation here
-        
-        let contents:Vec<String>=param.iter().map(|item| item.content().clone()).collect();
+
+        let contents: Vec<String> = param.iter().map(|item| item.content().clone()).collect();
 
         let _ = self.notify_client.notify_batch(&contents).await;
 
@@ -371,47 +435,44 @@ where A: AIHelper<Output = String>
 
     /// 这里决定该监控类用哪个ai和推送到哪
     async fn run(&mut self, config: &Config) -> Result<(), News2tgError> {
-    
         // 创建一个 5min 的周期定时器，可自行调整
         let mut main_ticker = interval(Duration::from_secs(60 * 5));
 
         loop {
             main_ticker.tick().await;
 
-            let result: Vec<News2tgNotifyBase>=match self.fetch(config).await {
-                Ok(output)=> output,
-                Err(err)=> {
+            let result: Vec<News2tgNotifyBase> = match self.fetch(config).await {
+                Ok(output) => output,
+                Err(err) => {
                     eprintln!("获取hacker news信息失败");
                     return Err(err);
                 }
             };
-    
-            if result.capacity()>0{
-                let result =self.ai_transfer(result).await.unwrap();
-                let _ =self.notify(result).await;
+
+            if result.capacity() > 0 {
+                match self.ai_transfer(result).await {
+                    Ok(processed) => {
+                        let _ = self.notify(processed).await;
+                    }
+                    Err(err) => {
+                        eprintln!("HN ai_transfer failed: {:?}", err);
+                    }
+                }
             }
-    
+
             self.clean_old_urls(Local::now()).await;
         }
-        
     }
 }
 
-
-
-
 #[cfg(test)]
-mod tests{
-    use std::time::Duration;
-
+mod tests {
     use crate::common::config::Config;
-    use crate::implementations::ai_helper_deepseek::AIHelperDeepSeek;
-    use crate::implementations::notify_tg::NotifyTelegram;
 
     use super::*;
 
     #[tokio::test]
-    async fn test_url(){
+    async fn test_url() {
         let config = Config::from_file("myconfig.toml");
 
         // // 新建gRPC客户端
@@ -429,16 +490,10 @@ mod tests{
         // let tg_client=NotifyTelegram::new(config.telegram.api_token.to_string(), config.telegram.chat_id.parse::<i64>().expect("Invalid Tg chat id"));
         // let ai_client=AIHelperDeepSeek::new(config.deepseek.api_token.to_string());
 
-        // let mut monitor=MonitorHackerNews::new(http_client, tg_client, ai_client, rpc_client);
-        
+        // let mut monitor=MonitorHackerNews::new(http_client, tg_client, ai_client);
+
         // monitor.run(&config).await;
 
         // println!("result is :{:?}", result.get(0))
-
     }
 }
-
-
-
-
-

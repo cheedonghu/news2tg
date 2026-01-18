@@ -1,16 +1,5 @@
-use log::{info, warn,error};
-// use news2tg::myservice::my_service_client::MyServiceClient;
-// use news2tg::myservice::ServiceRequest;
-use tonic::transport::Channel;
-use std::time::Duration;
-use flexi_logger::{LogSpecification,LevelFilter, Duplicate, FileSpec, Logger, WriteMode, Criterion, Naming, Cleanup, detailed_format};
-use flexi_logger::LoggerHandle;
-use std::{collections::HashMap, env};
-
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-
     // 配置 flexi_logger
     // Logger::try_with_str("debug")
     // .unwrap()
@@ -30,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //     .timeout(Duration::from_secs(10))         // 设置调用超时时间
     //     .connect()
     //     .await?;
-    
+
     // let mut client = MyServiceClient::new(channel);
 
     // // 建立与服务器的连接

@@ -5,10 +5,10 @@ use reqwest::Client;
 use tokio;
 use tokio::time::Duration;
 
-use implementations::*;
-use traits::news2tg::News2tg;
 use crate::common::tools::escape_markdown_v2;
 use crate::traits::notify::Notify;
+use implementations::*;
+use traits::news2tg::News2tg;
 
 use crate::common::config::Cli;
 use crate::common::config::Config;
@@ -34,7 +34,7 @@ async fn main() {
     );
     let startup_text = format!("News2tg启动完成，监控任务开始投递内容。\n启动时间：[{}]\n项目地址：https://github.com/cheedonghu/news2tg", Local::now().format("%Y-%m-%d %H:%M").to_string());
     println!("{}", startup_text);
-    if let Err(err) = tg_client.notify(& escape_markdown_v2(&startup_text)).await {
+    if let Err(err) = tg_client.notify(&escape_markdown_v2(&startup_text)).await {
         eprintln!("Failed to send startup notification: {:?}", err);
     }
     // Startup fixed message
@@ -83,7 +83,6 @@ async fn main() {
         },
     }
 }
-
 
 pub async fn wait_for_ctrl_c() {
     tokio::signal::ctrl_c()
