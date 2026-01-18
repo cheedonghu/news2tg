@@ -1,6 +1,5 @@
-use std::error::Error;
 use async_trait::async_trait;
-
+use std::error::Error;
 
 // 定义 Monitor trait
 #[async_trait]

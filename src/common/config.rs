@@ -7,13 +7,12 @@ use serde::Deserialize;
 #[command(about = "Reads configuration from a file", long_about = None)]
 pub struct Cli {
     /// Path to the configuration file
-    #[arg(short, long, default_value="config.toml")]
+    #[arg(short, long, default_value = "config.toml")]
     pub config: String,
     /// Path to output log file
     #[arg(short, long, default_value = "output.log")]
     pub output: String,
 }
-
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Features {
@@ -21,6 +20,8 @@ pub struct Features {
     pub v2ex_fetch_latest: bool,
     /// 新帖推送关键字过滤
     pub v2ex_fetch_latest_keyword: Vec<String>,
+    /// 新帖推送节点过滤
+    pub v2ex_fetch_latest_node_name: Vec<String>,
     /// 热帖推送开关
     pub v2ex_fetch_hot: bool,
     /// hacker news top贴推送开关
@@ -33,7 +34,6 @@ pub struct Features {
     pub hn_fetch_time_gap: usize,
 }
 
-
 #[derive(Deserialize, Debug, Clone)]
 pub struct TelegramConfig {
     pub api_token: String,
@@ -42,14 +42,14 @@ pub struct TelegramConfig {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct DeepSeek {
-    pub api_token: String
+    pub api_token: String,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Config {
     pub features: Features,
     pub telegram: TelegramConfig,
-    pub deepseek: DeepSeek
+    pub deepseek: DeepSeek,
 }
 
 impl Config {
