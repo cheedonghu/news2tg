@@ -178,8 +178,8 @@ impl<N: Notify, A: AIHelper> MonitorHackerNews<N, A> {
         let response=self.http_client
         .get(url.clone()).send()
         .map_err(|err| News2tgError::RuntimeError("获取hackernews帖子内容请求发送失败".to_string()))
-        .await.unwrap()
-        .text().map_err(|err| News2tgError::RuntimeError("提取hackernews帖子文本失败".to_string())).await.unwrap();
+        .await.ok()?
+        .text().map_err(|err| News2tgError::RuntimeError("提取hackernews帖子文本失败".to_string())).await.ok()?;
 
         // 仅创建时间不算短的才继续解析推送否则推送频率太高
         if !self.judge_news_date(&response, time_gape) {
