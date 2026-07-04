@@ -16,8 +16,8 @@ hacker news: 包含帖子推送和AI总结
 # 1. 复制项目内的docker-compose.yml
 nano docker-compose.yml
 
-# 2. 创建挂载的文件夹
-mkdir ./logs && mkdir ./config
+# 2. 创建挂载的文件夹（日志由 Docker 收集，不再需要 ./logs）
+mkdir ./config
 
 # 3. 把项目内的配置文件放在config文件夹下
 nano ./config/config.toml
@@ -29,7 +29,17 @@ docker compose up -d
 ### 自己构建
 参考dockerfile文件
 
+本地构建（Go ≥ 1.22）：
+~~~bash
+go mod tidy
+go build -o bin/news-notify ./cmd/news-notify
+./bin/news-notify -c config.toml
+~~~
+
+## 技术栈
+本项目已从 Rust 重构为 Go：
+- 主程序：Go（goroutine + `time.Ticker` 替代 `tokio`）
+- 依赖：`go-telegram-bot-api/v5`、`sashabaranov/go-openai`（DeepSeek 兼容 OpenAI 协议）、`PuerkitoBio/goquery`、`BurntSushi/toml`
+- HN 正文提取：仍由 Python sidecar [hacker-news-digest](https://github.com/cheedonghu/hacker-news-digest) 提供，通过 `127.0.0.1:50051` HTTP 调用
+
 ## todo
-1. v2ex支持关键字
-2. hackernews支持AI总结的开关
-3. hackernews使用ollama 7b大模型

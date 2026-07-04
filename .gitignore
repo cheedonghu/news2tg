@@ -1,6 +1,28 @@
-/target
-myconfig.toml
+# Binaries
+/bin/
+/news-notify
+/news-notify.exe
+
+# Test / coverage
+*.test
+*.out
+coverage.txt
+
+# Logs and runtime output
+/logs/
+*.log
 output.txt
-output.html
-.idea
-.vscode
+
+# Local config (user-specific secrets)
+myconfig.toml
+config.local.toml
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Go workspace files
+go.work
+go.work.sum

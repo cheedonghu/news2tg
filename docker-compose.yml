@@ -1,15 +1,22 @@
 services:
-  news2tg:
+  news-notify:
     image: cheedonghu/news2tg:latest
-    container_name: news2tg
+    container_name: news-notify
     volumes:
       # 使用相对路径挂载本地目录（推荐）
       - ./config:/config
-      - ./logs:/logs
+      # 日志不再写文件，改由 Docker 收集，所以不用再挂 ./logs
       #    ports:
       # 如果需要外部访问gRPC服务，保留端口映射
     #      - "50051:50051"
     environment:
       - RUST_CONFIG_PATH=/config/config.toml
     #      - RUST_LOG=info
+    # 日志走 stdout/stderr，交给 Docker 的 json-file 驱动轮转，避免无限增长。
+    # 用 `docker logs news-notify` 查看；单文件最大 10MB，最多保留 3 个。
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
