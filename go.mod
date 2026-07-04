@@ -1,4 +1,4 @@
-module github.com/cheedonghu/news-notify
+module github.com/cheedonghu/news2tg
 
 go 1.22
 

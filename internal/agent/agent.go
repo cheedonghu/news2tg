@@ -17,7 +17,7 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 
-	"github.com/cheedonghu/news-notify/internal/digest"
+	"github.com/cheedonghu/news2tg/internal/digest"
 )
 
 // 两个工具的名字，注册表和工具定义共用，避免拼写漂移。

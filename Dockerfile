@@ -7,7 +7,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/news-notify ./cmd/news-notify
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /out/news2tg ./cmd/news2tg
 
 FROM python:3.11-slim
 WORKDIR /app
@@ -22,7 +22,7 @@ RUN git clone https://github.com/cheedonghu/hacker-news-digest.git .
 RUN pip install --no-cache-dir -r ./page_content_extractor/requirements.txt
 
 # 从Go构建阶段复制编译好的二进制文件
-COPY --from=go-builder /out/news-notify /app/news-notify
+COPY --from=go-builder /out/news2tg /app/news2tg
 
 # 创建配置目录
 RUN mkdir /config
@@ -35,4 +35,4 @@ EXPOSE 50051
 
 # 启动命令：不再把输出重定向到文件，让日志走 stdout/stderr，
 # 交给 Docker 的 logging driver 统一收集 + 轮转（见 docker-compose.yml 的 logging 段）。
-CMD ["sh", "-c", "python -m page_content_extractor.main & ./news-notify -c $RUST_CONFIG_PATH"]
+CMD ["sh", "-c", "python -m page_content_extractor.main & ./news2tg -c $RUST_CONFIG_PATH"]

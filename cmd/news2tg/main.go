@@ -1,6 +1,6 @@
 // 这是程序入口。
 // Go 规则：可执行程序的入口包必须叫 `package main`，而且必须有一个 `func main()`。
-// 编译时 `go build ./cmd/news-notify` 会以"目录名"news-notify 作为二进制名。
+// 编译时 `go build ./cmd/news2tg` 会以"目录名"news2tg 作为二进制名。
 package main
 
 import (
@@ -16,14 +16,14 @@ import (
 	"syscall"   // SIGTERM 等系统信号常量
 	"time"
 
-	"github.com/cheedonghu/news-notify/internal/agent"
-	"github.com/cheedonghu/news-notify/internal/ai"
-	"github.com/cheedonghu/news-notify/internal/command"
-	"github.com/cheedonghu/news-notify/internal/config"
-	"github.com/cheedonghu/news-notify/internal/digest"
-	"github.com/cheedonghu/news-notify/internal/logx"
-	"github.com/cheedonghu/news-notify/internal/monitor"
-	"github.com/cheedonghu/news-notify/internal/notify"
+	"github.com/cheedonghu/news2tg/internal/agent"
+	"github.com/cheedonghu/news2tg/internal/ai"
+	"github.com/cheedonghu/news2tg/internal/command"
+	"github.com/cheedonghu/news2tg/internal/config"
+	"github.com/cheedonghu/news2tg/internal/digest"
+	"github.com/cheedonghu/news2tg/internal/logx"
+	"github.com/cheedonghu/news2tg/internal/monitor"
+	"github.com/cheedonghu/news2tg/internal/notify"
 )
 
 // 初始化slog：JSON handler 外面再包一层 logx.Handler，
@@ -67,7 +67,7 @@ func main() {
 
 	// 5) 拼一条启动通知
 	startupText := fmt.Sprintf(
-		"news-notify启动完成，监控任务开始投递内容。\n启动时间：[%s]\n项目地址：https://github.com/cheedonghu/news-notify",
+		"news2tg启动完成，监控任务开始投递内容。\n启动时间：[%s]\n项目地址：https://github.com/cheedonghu/news2tg",
 		time.Now().Format("2006-01-02 15:04"), // Go 的"魔法时间格式"，固定写这串数字
 	)
 	slog.Info(startupText)

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cheedonghu/news-notify/internal/config"
-	"github.com/cheedonghu/news-notify/internal/digest"
+	"github.com/cheedonghu/news2tg/internal/config"
+	"github.com/cheedonghu/news2tg/internal/digest"
 )
 
 // TestAgentSummarize 真实端到端跑一遍 agent：

@@ -32,8 +32,8 @@ docker compose up -d
 本地构建（Go ≥ 1.22）：
 ~~~bash
 go mod tidy
-go build -o bin/news-notify ./cmd/news-notify
-./bin/news-notify -c config.toml
+go build -o bin/news2tg ./cmd/news2tg
+./bin/news2tg -c config.toml
 ~~~
 
 ## 技术栈

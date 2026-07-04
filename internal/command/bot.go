@@ -13,9 +13,9 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"github.com/cheedonghu/news-notify/internal/config"
-	"github.com/cheedonghu/news-notify/internal/logx"
-	"github.com/cheedonghu/news-notify/internal/notify"
+	"github.com/cheedonghu/news2tg/internal/config"
+	"github.com/cheedonghu/news2tg/internal/logx"
+	"github.com/cheedonghu/news2tg/internal/notify"
 )
 
 // commandSummary 是本 bot 唯一认的命令名（对应 "/summary"）。

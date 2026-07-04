@@ -10,8 +10,8 @@ A Go service that scrapes V2EX and Hacker News, then pushes posts to a Telegram 
 
 ```bash
 go mod tidy                                   # sync deps
-go build -o bin/news-notify ./cmd/news-notify # build (binary name = directory name)
-./bin/news-notify -c config.toml              # run; -c / --config selects the TOML file
+go build -o bin/news2tg ./cmd/news2tg # build (binary name = directory name)
+./bin/news2tg -c config.toml              # run; -c / --config selects the TOML file
 
 go test ./...                                 # all tests
 go test ./internal/monitor                    # one package
@@ -20,7 +20,7 @@ go vet ./...
 gofmt -l .                                    # list unformatted files
 ```
 
-Requires Go ≥ 1.22 (relies on the Go 1.22 loop-variable semantics, though some code still defensively shadows — see `cmd/news-notify/main.go:127`).
+Requires Go ≥ 1.22 (relies on the Go 1.22 loop-variable semantics, though some code still defensively shadows — see `cmd/news2tg/main.go:127`).
 
 ## External runtime dependency
 
@@ -28,7 +28,7 @@ HN body extraction is **not** done in Go. It goes through the `digest.Fetcher` i
 
 ## Architecture
 
-`main.go` wires concrete implementations together, then runs each monitor as a goroutine under a single signal-cancellable `context.Context`. If any monitor returns a non-context error, `main` calls `cancel()` to bring all of them down together (`cmd/news-notify/main.go:130`).
+`main.go` wires concrete implementations together, then runs each monitor as a goroutine under a single signal-cancellable `context.Context`. If any monitor returns a non-context error, `main` calls `cancel()` to bring all of them down together (`cmd/news2tg/main.go:130`).
 
 The design is interface-based dependency injection — business code (`monitor`) depends only on interfaces, so swapping channels/providers means adding an implementation, not editing callers:
 

@@ -13,11 +13,11 @@ import (
 	"time"          // 时间/定时器
 
 	// 本项目内部包
-	"github.com/cheedonghu/news-notify/internal/config"
-	"github.com/cheedonghu/news-notify/internal/logx"
-	"github.com/cheedonghu/news-notify/internal/model"
-	"github.com/cheedonghu/news-notify/internal/notify"
-	"github.com/cheedonghu/news-notify/internal/tools"
+	"github.com/cheedonghu/news2tg/internal/config"
+	"github.com/cheedonghu/news2tg/internal/logx"
+	"github.com/cheedonghu/news2tg/internal/model"
+	"github.com/cheedonghu/news2tg/internal/notify"
+	"github.com/cheedonghu/news2tg/internal/tools"
 )
 
 // const 块：一次声明多个常量。
