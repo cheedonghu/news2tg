@@ -3,14 +3,100 @@
 package monitor
 
 import (
-	"fmt"     // 拼字符串
-	"strconv" // 字符串转数字
-	"strings" // 分割 "HH:MM"
-	"time"    // 时间/定时
+	"context"        // 上下文（取消、超时）
+	"encoding/json"  // JSON 解析
+	"fmt"            // 拼字符串
+	"io"             // 读响应体
+	"net/http"       // HTTP 请求/响应
+	"strconv"        // 字符串转数字
+	"strings"        // 分割 "HH:MM"
+	"time"           // 时间/定时
 
 	"github.com/cheedonghu/news2tg/internal/config"
+	"github.com/cheedonghu/news2tg/internal/notify"
 	"github.com/cheedonghu/news2tg/internal/tools"
 )
+
+// 中国天气网 cityinfo 接口基址；按城市编码拼 "{base}/{code}.html"。
+// 非官方接口：只取「城市名 + 状况 + 高/低温」，字段少但足够当日预报。
+const weatherCityInfoBase = "http://www.weather.com.cn/data/cityinfo"
+
+// Advisor 是本 monitor 依赖的「穿衣建议」能力（本地接口，便于测试注入 fake）。
+// ai.DeepSeek 实现了 Advise，所以 *ai.DeepSeek 自动满足 Advisor。
+type Advisor interface {
+	Advise(ctx context.Context, weatherText string) (string, error)
+}
+
+// cityInfoResp 对应 cityinfo 接口的 JSON：{"weatherinfo":{...}}。
+type cityInfoResp struct {
+	WeatherInfo struct {
+		City    string `json:"city"`
+		Temp1   string `json:"temp1"`   // 最高温
+		Temp2   string `json:"temp2"`   // 最低温
+		Weather string `json:"weather"`
+	} `json:"weatherinfo"`
+}
+
+// Weather 是「每日天气」monitor 实例。字段全私有，只能经 NewWeather 构造。
+type Weather struct {
+	httpClient *http.Client     // 共享连接池
+	notifier   notify.Notifier  // 推送渠道
+	advisor    Advisor          // 穿衣建议（可注入 fake）
+	mentions   []config.Mention // 每日 @ 的人
+	baseURL    string           // cityinfo 基址；测试时替换为 httptest server
+}
+
+// NewWeather 构造函数，注入依赖。baseURL 用生产常量，测试时字面量构造覆盖。
+func NewWeather(httpClient *http.Client, notifier notify.Notifier, advisor Advisor, mentions []config.Mention) *Weather {
+	return &Weather{
+		httpClient: httpClient,
+		notifier:   notifier,
+		advisor:    advisor,
+		mentions:   mentions,
+		baseURL:    weatherCityInfoBase,
+	}
+}
+
+// fetchCity 拉单个城市的当日天气。失败返回零值 + error，由上层决定跳过。
+func (w *Weather) fetchCity(ctx context.Context, code string) (cityWeather, error) {
+	url := fmt.Sprintf("%s/%s.html", w.baseURL, code)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return cityWeather{}, err
+	}
+
+	resp, err := w.httpClient.Do(req)
+	if err != nil {
+		return cityWeather{}, fmt.Errorf("network: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 非 2xx 直接当失败（如 404）。
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return cityWeather{}, fmt.Errorf("bad status %d for code %s", resp.StatusCode, code)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return cityWeather{}, fmt.Errorf("read body: %w", err)
+	}
+
+	var r cityInfoResp
+	if err := json.Unmarshal(body, &r); err != nil {
+		return cityWeather{}, fmt.Errorf("parse json: %w", err)
+	}
+	// city 为空说明接口没给有效数据，视作失败。
+	if r.WeatherInfo.City == "" {
+		return cityWeather{}, fmt.Errorf("empty weatherinfo for code %s", code)
+	}
+
+	return cityWeather{
+		Name:    r.WeatherInfo.City,
+		Weather: r.WeatherInfo.Weather,
+		High:    r.WeatherInfo.Temp1,
+		Low:     r.WeatherInfo.Temp2,
+	}, nil
+}
 
 // parsePushTime 解析 "HH:MM" 推送时间。
 // 任何不合法（空、缺段、越界、非数字）都回落到 07:00 —— 配置写错也不至于不推。

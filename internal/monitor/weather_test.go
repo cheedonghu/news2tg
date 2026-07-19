@@ -1,6 +1,9 @@
 package monitor
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -105,6 +108,37 @@ func TestBuildMessage(t *testing.T) {
 		msg := buildMessage("2026-07-19", items, "建议", nil)
 		if strings.Contains(msg, "tg://user?id=") {
 			t.Fatalf("mentions 为空时不应出现提及链接:\n%s", msg)
+		}
+	})
+}
+
+func TestFetchCity(t *testing.T) {
+	// 模拟中国天气网 cityinfo 接口返回。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/101010100.html") {
+			w.Write([]byte(`{"weatherinfo":{"city":"北京","cityid":"101010100","temp1":"33℃","temp2":"24℃","weather":"多云"}}`))
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	// 直接用字面量构造，注入测试 baseURL 与 httptest client。
+	wm := &Weather{httpClient: srv.Client(), baseURL: srv.URL}
+
+	t.Run("正常解析", func(t *testing.T) {
+		got, err := wm.fetchCity(context.Background(), "101010100")
+		if err != nil {
+			t.Fatalf("fetchCity 意外报错: %v", err)
+		}
+		if got.Name != "北京" || got.Weather != "多云" || got.High != "33℃" || got.Low != "24℃" {
+			t.Fatalf("解析结果不对: %+v", got)
+		}
+	})
+
+	t.Run("404 → 报错", func(t *testing.T) {
+		if _, err := wm.fetchCity(context.Background(), "999999999"); err == nil {
+			t.Fatalf("非 200 响应应报错")
 		}
 	})
 }
