@@ -81,14 +81,14 @@ func TestBuildMessage(t *testing.T) {
 	t.Run("完整：城市/建议/提及都在", func(t *testing.T) {
 		msg := buildMessage("2026-07-19", items, "北京：加件外套", mentions)
 		wants := []string{
-			"每日天气",                          // 标题
-			"*北京*",                          // 城市加粗
-			"多云",                            // 状况
-			`24℃\~33℃`,                     // 温度：low~high，~ 被转义为 \~
+			"每日天气",     // 标题
+			"*北京*",     // 城市加粗
+			"多云",       // 状况
+			`24℃\~33℃`, // 温度：low~high，~ 被转义为 \~
 			"*广州*",
-			"👕",                            // 穿衣建议段标记
-			"北京：加件外套",                       // 建议正文
-			"[老王](tg://user?id=234567)",    // @ 提及链接
+			"👕",                         // 穿衣建议段标记
+			"北京：加件外套",                   // 建议正文
+			"[老王](tg://user?id=234567)", // @ 提及链接
 		}
 		for _, w := range wants {
 			if !strings.Contains(msg, w) {

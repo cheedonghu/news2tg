@@ -3,14 +3,14 @@
 package monitor
 
 import (
-	"context"        // 上下文（取消、超时）
-	"encoding/json"  // JSON 解析
-	"fmt"            // 拼字符串
-	"io"             // 读响应体
-	"net/http"       // HTTP 请求/响应
-	"strconv"        // 字符串转数字
-	"strings"        // 分割 "HH:MM"
-	"time"           // 时间/定时
+	"context"       // 上下文（取消、超时）
+	"encoding/json" // JSON 解析
+	"fmt"           // 拼字符串
+	"io"            // 读响应体
+	"net/http"      // HTTP 请求/响应
+	"strconv"       // 字符串转数字
+	"strings"       // 分割 "HH:MM"
+	"time"          // 时间/定时
 
 	"github.com/cheedonghu/news2tg/internal/config"
 	"github.com/cheedonghu/news2tg/internal/notify"
@@ -31,8 +31,8 @@ type Advisor interface {
 type cityInfoResp struct {
 	WeatherInfo struct {
 		City    string `json:"city"`
-		Temp1   string `json:"temp1"`   // 最高温
-		Temp2   string `json:"temp2"`   // 最低温
+		Temp1   string `json:"temp1"` // 最高温
+		Temp2   string `json:"temp2"` // 最低温
 		Weather string `json:"weather"`
 	} `json:"weatherinfo"`
 }
@@ -117,6 +117,7 @@ func parsePushTime(s string) (hh, mm int) {
 // nextRun 计算「下一个 hh:mm」的绝对时间。
 //   - 先构造今天的 hh:mm；
 //   - 若该时刻不晚于 now（已过或正好相等），则推到明天。
+//
 // loc 指定时区（生产用 Asia/Shanghai，测试用 UTC）。
 func nextRun(now time.Time, hh, mm int, loc *time.Location) time.Time {
 	y, m, d := now.Date() // 拆出年月日
