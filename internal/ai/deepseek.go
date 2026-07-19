@@ -69,3 +69,34 @@ func (d *DeepSeek) Summarize(ctx context.Context, content string) (string, error
 	// 取第一个候选的回复文本。
 	return resp.Choices[0].Message.Content, nil
 }
+
+// Advise 根据多城市天气文本，用 DeepSeek 生成中文穿衣建议。
+//
+// 与 Summarize 一样是"失败兜底不抛错"：任何异常都返回固定文案 + nil，
+// 让天气推送照常发出去（AI 只是锦上添花，不能阻断主流程）。
+// 一次调用处理所有城市：把各城市天气拼进 prompt，让模型按城市各给一句。
+func (d *DeepSeek) Advise(ctx context.Context, weatherText string) (string, error) {
+	slog.InfoContext(ctx, "利用大模型生成穿衣建议")
+
+	// prompt 约束输出格式：每城市一行「城市：建议」，避免模型发挥太长。
+	prompt := fmt.Sprintf(
+		"下面是今天几个城市的天气，请用中文为每个城市各写一句简短的穿衣建议，"+
+			"每个城市一行，格式「城市：建议」，不要多余解释：\n%s",
+		weatherText,
+	)
+
+	resp, err := d.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+		Model: "deepseek-v4-flash", // 与 Summarize 同款轻量模型
+		Messages: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleUser, Content: prompt},
+		},
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "穿衣建议大模型返回异常", "err", err)
+		return "穿衣建议获取失败", nil // 兜底，不抛错
+	}
+	if len(resp.Choices) == 0 {
+		return "穿衣建议获取失败", nil
+	}
+	return resp.Choices[0].Message.Content, nil
+}
