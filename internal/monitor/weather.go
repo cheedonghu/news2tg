@@ -13,7 +13,10 @@ import (
 	"strings"       // 分割 "HH:MM"
 	"time"          // 时间/定时
 
+	_ "time/tzdata" // 把时区库嵌进二进制，保证 Windows/容器都能 LoadLocation
+
 	"github.com/cheedonghu/news2tg/internal/config"
+	"github.com/cheedonghu/news2tg/internal/logx"
 	"github.com/cheedonghu/news2tg/internal/notify"
 	"github.com/cheedonghu/news2tg/internal/tools"
 )
@@ -216,4 +219,46 @@ func (w *Weather) pushOnce(ctx context.Context, cfg *config.Config) error {
 
 	// 单条也走 NotifyBatch：它发预渲染 MarkdownV2、不整体转义，正合适。
 	return w.notifier.NotifyBatch(ctx, []string{msg})
+}
+
+// Run 实现 monitor.Monitor：每天定点推送一次天气。
+// 与 ticker 型 monitor 不同 —— 每轮算「下一个推送时刻」用 Timer 睡到点。
+func (w *Weather) Run(ctx context.Context, cfg *config.Config) error {
+	// 未启用：直接退出，不占用 goroutine 也不影响别的 monitor。
+	if !cfg.Features.WeatherEnabled {
+		slog.Info("天气推送未启用，weather monitor 退出")
+		return nil
+	}
+
+	// 固定东八区；tzdata 已嵌入，LoadLocation 不依赖系统时区库。
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		return fmt.Errorf("加载时区失败: %w", err)
+	}
+	hh, mm := parsePushTime(cfg.Features.WeatherPushTime)
+	slog.Info("天气推送已启用", "push_time", fmt.Sprintf("%02d:%02d", hh, mm), "cities", cfg.Features.WeatherCities)
+
+	for {
+		// 算到下一个推送时刻的等待时长。
+		next := nextRun(time.Now().In(loc), hh, mm, loc)
+		timer := time.NewTimer(time.Until(next))
+
+		select {
+		case <-ctx.Done():
+			timer.Stop() // 及时释放 timer
+			return ctx.Err()
+		case <-timer.C:
+			// 到点了，往下执行本轮推送。
+		}
+
+		// 每个推送周期一个 task_id，链路日志用 *Context 变体。
+		cctx := logx.WithTaskID(ctx, logx.NewTaskID())
+		if err := w.pushOnce(cctx, cfg); err != nil {
+			// pushOnce 里的 NotifyBatch 在 ctx 取消时会返回 ctx.Err() —— 那属于正常关闭。
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			slog.ErrorContext(cctx, "天气推送失败", "err", err)
+		}
+	}
 }
