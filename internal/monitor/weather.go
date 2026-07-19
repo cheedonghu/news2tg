@@ -7,6 +7,7 @@ import (
 	"encoding/json" // JSON 解析
 	"fmt"           // 拼字符串
 	"io"            // 读响应体
+	"log/slog"      // 结构化日志
 	"net/http"      // HTTP 请求/响应
 	"strconv"       // 字符串转数字
 	"strings"       // 分割 "HH:MM"
@@ -183,4 +184,36 @@ func buildMessage(date string, items []cityWeather, advice string, mentions []co
 	}
 
 	return b.String()
+}
+
+// pushOnce 执行一次完整推送：抓所有城市 → 生成建议 → 拼消息 → 发出。
+// 单城市抓取失败只跳过；全部失败则不推送（返回 nil，等下一天）。
+func (w *Weather) pushOnce(ctx context.Context, cfg *config.Config) error {
+	var items []cityWeather
+	for _, code := range cfg.Features.WeatherCities {
+		cw, err := w.fetchCity(ctx, code)
+		if err != nil {
+			slog.ErrorContext(ctx, "天气抓取失败，跳过该城市", "code", code, "err", err)
+			continue
+		}
+		items = append(items, cw)
+	}
+	if len(items) == 0 {
+		slog.ErrorContext(ctx, "天气全部城市抓取失败，跳过本轮推送")
+		return nil
+	}
+
+	// 给 LLM 的输入：每城市一行「城市 状况 低~高」。
+	var sb strings.Builder
+	for _, it := range items {
+		sb.WriteString(fmt.Sprintf("%s %s %s~%s\n", it.Name, it.Weather, it.Low, it.High))
+	}
+	// 建议失败已在 Advise 内兜底（返回兜底串 + nil），这里 err 恒为 nil，忽略即可。
+	advice, _ := w.advisor.Advise(ctx, sb.String())
+
+	date := time.Now().Format("2006-01-02")
+	msg := buildMessage(date, items, advice, w.mentions)
+
+	// 单条也走 NotifyBatch：它发预渲染 MarkdownV2、不整体转义，正合适。
+	return w.notifier.NotifyBatch(ctx, []string{msg})
 }

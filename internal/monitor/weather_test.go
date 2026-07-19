@@ -142,3 +142,74 @@ func TestFetchCity(t *testing.T) {
 		}
 	})
 }
+
+// —— 测试用 fake ——
+
+type fakeNotifier struct{ batch []string }                                               // 捕获 NotifyBatch 的入参
+func (f *fakeNotifier) Notify(ctx context.Context, content string) error                 { return nil }
+func (f *fakeNotifier) NotifyTo(ctx context.Context, chatID int64, content string) error { return nil }
+func (f *fakeNotifier) NotifyBatch(ctx context.Context, contents []string) error {
+	f.batch = contents
+	return nil
+}
+
+type fakeAdvisor struct{ out string } // 固定返回建议文本
+func (f fakeAdvisor) Advise(ctx context.Context, weatherText string) (string, error) {
+	return f.out, nil
+}
+
+func TestPushOnce(t *testing.T) {
+	// 服务器：101010100 正常，888888888 返回 500（模拟单城市失败）。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/101010100.html") {
+			w.Write([]byte(`{"weatherinfo":{"city":"北京","temp1":"33℃","temp2":"24℃","weather":"多云"}}`))
+			return
+		}
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	t.Run("部分城市失败仍推送好的那个 + 带建议", func(t *testing.T) {
+		fn := &fakeNotifier{}
+		wm := &Weather{
+			httpClient: srv.Client(),
+			notifier:   fn,
+			advisor:    fakeAdvisor{out: "北京：多穿点"},
+			baseURL:    srv.URL,
+		}
+		cfg := &config.Config{Features: config.Features{
+			WeatherCities: []string{"101010100", "888888888"}, // 后者会失败
+		}}
+
+		if err := wm.pushOnce(context.Background(), cfg); err != nil {
+			t.Fatalf("pushOnce 意外报错: %v", err)
+		}
+		if len(fn.batch) != 1 {
+			t.Fatalf("应恰好推送 1 条，实际 %d 条", len(fn.batch))
+		}
+		msg := fn.batch[0]
+		if !strings.Contains(msg, "*北京*") || !strings.Contains(msg, "北京：多穿点") {
+			t.Fatalf("消息内容缺失:\n%s", msg)
+		}
+	})
+
+	t.Run("全部城市失败 → 不推送", func(t *testing.T) {
+		fn := &fakeNotifier{}
+		wm := &Weather{
+			httpClient: srv.Client(),
+			notifier:   fn,
+			advisor:    fakeAdvisor{out: "x"},
+			baseURL:    srv.URL,
+		}
+		cfg := &config.Config{Features: config.Features{
+			WeatherCities: []string{"888888888"}, // 唯一城市失败
+		}}
+
+		if err := wm.pushOnce(context.Background(), cfg); err != nil {
+			t.Fatalf("pushOnce 意外报错: %v", err)
+		}
+		if len(fn.batch) != 0 {
+			t.Fatalf("全失败时不应推送，实际推了 %d 条", len(fn.batch))
+		}
+	})
+}
