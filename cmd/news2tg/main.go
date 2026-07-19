@@ -125,6 +125,20 @@ func main() {
 		adminIDs = append(adminIDs, id)
 	}
 
+	// 9.2.1) 解析每日天气 @ 提及列表（"id" 或 "id:显示名"，与 admin_ids 独立）。
+	mentions := make([]config.Mention, 0, len(cfg.Features.WeatherMention))
+	for _, s := range cfg.Features.WeatherMention {
+		m, perr := config.ParseMention(s)
+		if perr != nil {
+			slog.Warn("跳过非法 weather_mention", "value", s, "err", perr)
+			continue
+		}
+		mentions = append(mentions, m)
+	}
+
+	// aiClient 已实现 Advise，天然满足 monitor.Advisor。
+	weatherMon := monitor.NewWeather(httpClient, tgClient, aiClient, mentions)
+
 	// 9.3) 命令 bot：收 /summary <网址>，调 agent 总结后推送到频道（tgClient）。
 	cmdBot, err := command.NewBot(cfg.Telegram.APIToken, summaryAgent, tgClient, adminIDs)
 	if err != nil {
@@ -140,6 +154,7 @@ func main() {
 	}{
 		{"hackernews", hnMon},
 		{"v2ex", v2exMon},
+		{"weather", weatherMon}, // 新增：每日天气定点推送
 		{"command-bot", cmdBot},
 	}
 

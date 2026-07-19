@@ -22,6 +22,16 @@ hn_fetch_num = 1
 # hacker news目标帖子距今时间（hacker news的top算法可能导致大量新帖冒出） 单位:H
 hn_fetch_time_gap = 1
 
+# —— 每日天气推送 ——
+# 总开关
+weather_enabled = false
+# 推送时间 HH:MM（空或非法回落 07:00）
+weather_push_time = "07:00"
+# 城市编码列表（101010100=北京 101280101=广州；编码可在 weather.com.cn 城市页 URL 里找）
+weather_cities = ["101010100"]
+# 每日天气要 @ 的人，"id" 或 "id:显示名"；与 admin_ids 无关
+weather_mention = ["123456789:管理员"]
+
 [deepseek]
 api_token="key"
 
