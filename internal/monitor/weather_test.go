@@ -181,7 +181,7 @@ func TestPushOnce(t *testing.T) {
 			WeatherCities: []string{"101010100", "888888888"}, // 后者会失败
 		}}
 
-		if err := wm.pushOnce(context.Background(), cfg); err != nil {
+		if err := wm.pushOnce(context.Background(), cfg, "2026-07-19"); err != nil {
 			t.Fatalf("pushOnce 意外报错: %v", err)
 		}
 		if len(fn.batch) != 1 {
@@ -190,6 +190,11 @@ func TestPushOnce(t *testing.T) {
 		msg := fn.batch[0]
 		if !strings.Contains(msg, "*北京*") || !strings.Contains(msg, "北京：多穿点") {
 			t.Fatalf("消息内容缺失:\n%s", msg)
+		}
+		// 锁定修复：日期由调用方传入并原样出现在消息标题里，不再由 pushOnce 内部取 time.Now()。
+		// 注意 EscapeMarkdownV2 会把 '-' 转义为 '\-'，标题里实际是 "2026\-07\-19"。
+		if !strings.Contains(msg, `2026\-07\-19`) {
+			t.Fatalf("消息应包含调用方传入的日期 2026-07-19:\n%s", msg)
 		}
 	})
 
@@ -205,7 +210,7 @@ func TestPushOnce(t *testing.T) {
 			WeatherCities: []string{"888888888"}, // 唯一城市失败
 		}}
 
-		if err := wm.pushOnce(context.Background(), cfg); err != nil {
+		if err := wm.pushOnce(context.Background(), cfg, "2026-07-19"); err != nil {
 			t.Fatalf("pushOnce 意外报错: %v", err)
 		}
 		if len(fn.batch) != 0 {

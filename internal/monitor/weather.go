@@ -25,6 +25,9 @@ import (
 // 非官方接口：只取「城市名 + 状况 + 高/低温」，字段少但足够当日预报。
 const weatherCityInfoBase = "http://www.weather.com.cn/data/cityinfo"
 
+// 伪装成浏览器 UA；该非官方接口对无头请求（无 UA）可能拒绝响应。
+const weatherUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+
 // Advisor 是本 monitor 依赖的「穿衣建议」能力（本地接口，便于测试注入 fake）。
 // ai.DeepSeek 实现了 Advise，所以 *ai.DeepSeek 自动满足 Advisor。
 type Advisor interface {
@@ -68,6 +71,7 @@ func (w *Weather) fetchCity(ctx context.Context, code string) (cityWeather, erro
 	if err != nil {
 		return cityWeather{}, err
 	}
+	req.Header.Set("User-Agent", weatherUserAgent) // 无 UA 可能被该非官方接口拒绝
 
 	resp, err := w.httpClient.Do(req)
 	if err != nil {
@@ -191,7 +195,8 @@ func buildMessage(date string, items []cityWeather, advice string, mentions []co
 
 // pushOnce 执行一次完整推送：抓所有城市 → 生成建议 → 拼消息 → 发出。
 // 单城市抓取失败只跳过；全部失败则不推送（返回 nil，等下一天）。
-func (w *Weather) pushOnce(ctx context.Context, cfg *config.Config) error {
+// date 由调用方（Run）按东八区算好传入，本函数不再自行取 time.Now，便于测试且避免时区错位。
+func (w *Weather) pushOnce(ctx context.Context, cfg *config.Config, date string) error {
 	var items []cityWeather
 	for _, code := range cfg.Features.WeatherCities {
 		cw, err := w.fetchCity(ctx, code)
@@ -214,7 +219,6 @@ func (w *Weather) pushOnce(ctx context.Context, cfg *config.Config) error {
 	// 建议失败已在 Advise 内兜底（返回兜底串 + nil），这里 err 恒为 nil，忽略即可。
 	advice, _ := w.advisor.Advise(ctx, sb.String())
 
-	date := time.Now().Format("2006-01-02")
 	msg := buildMessage(date, items, advice, w.mentions)
 
 	// 单条也走 NotifyBatch：它发预渲染 MarkdownV2、不整体转义，正合适。
@@ -253,7 +257,10 @@ func (w *Weather) Run(ctx context.Context, cfg *config.Config) error {
 
 		// 每个推送周期一个 task_id，链路日志用 *Context 变体。
 		cctx := logx.WithTaskID(ctx, logx.NewTaskID())
-		if err := w.pushOnce(cctx, cfg); err != nil {
+		// 必须按 loc（东八区）取日期：推送时刻是 07:00 CST = 前一日 23:00 UTC，
+		// 若用机器本地时间（容器多为 UTC），标题日期会显示成前一天。
+		date := time.Now().In(loc).Format("2006-01-02")
+		if err := w.pushOnce(cctx, cfg, date); err != nil {
 			// pushOnce 里的 NotifyBatch 在 ctx 取消时会返回 ctx.Err() —— 那属于正常关闭。
 			if ctx.Err() != nil {
 				return ctx.Err()
