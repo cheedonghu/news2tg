@@ -88,8 +88,10 @@ func (m *HackerNews) Run(ctx context.Context, cfg *config.Config) error {
 			for _, p := range processed {
 				contents = append(contents, p.Content)
 			}
-			if err := m.notifier.NotifyBatch(cctx, contents); err != nil {
-				slog.ErrorContext(cctx, "HN 通知失败", "err", err)
+			for _, c := range contents {
+				if err := m.notifier.NotifyMarkdown(cctx, c); err != nil {
+					slog.ErrorContext(cctx, "HN 通知失败", "err", err)
+				}
 			}
 		}
 

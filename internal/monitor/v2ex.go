@@ -98,9 +98,10 @@ func (m *V2EX) Run(ctx context.Context, cfg *config.Config) error {
 				// append 给切片追加元素。注意必须用返回值赋回去（切片可能扩容换底层数组）。
 				contents = append(contents, r.Content)
 			}
-			if err := m.notifier.NotifyBatch(cctx, contents); err != nil {
-				// 这里 if 内部又用 := 声明了一个新的 err，作用域只在 if 内，不影响外层。
-				slog.ErrorContext(cctx, "V2EX 通知失败", "err", err)
+			for _, c := range contents {
+				if err := m.notifier.NotifyMarkdown(cctx, c); err != nil {
+					slog.ErrorContext(cctx, "V2EX 通知失败", "err", err)
+				}
 			}
 		}
 

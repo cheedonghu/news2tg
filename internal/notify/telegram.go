@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	// 重命名 import：原包名是 tgbotapi，这里显式写出来强调（其实它本身就叫这个名）。
@@ -13,11 +14,19 @@ import (
 	"github.com/cheedonghu/news2tg/internal/tools"
 )
 
+// sendInterval 是任意两次发送之间的最小间隔，用来躲开 Telegram 的频率限制。
+const sendInterval = 1500 * time.Millisecond
+
 // Telegram 是 Notifier 接口的一个实现。
 // 字段全小写 = 包外不可见，外部只能用 NewTelegram 构造、用接口方法操作。
 type Telegram struct {
 	bot    *tgbotapi.BotAPI // SDK 的 bot 客户端实例
 	chatID int64            // 目标聊天/频道 ID（Telegram 用 int64，可能是负数）
+
+	// 限速状态。以前这个 sleep 埋在 NotifyBatch 里，只保护批量路径；
+	// 下沉到客户端后，weather、/summary 回复等所有发送路径共享同一个节流阀。
+	mu       sync.Mutex // 保护 lastSend，同时让发送整体串行化
+	lastSend time.Time  // 上次发送完成的时刻；零值表示"从没发过"
 }
 
 // NewTelegram 构造函数。第一次调用时 SDK 会发请求验 token，所以可能返回 error。
@@ -38,47 +47,60 @@ func (t *Telegram) Notify(ctx context.Context, content string) error {
 	return t.NotifyTo(ctx, t.chatID, content)
 }
 
-// NotifyTo 发一条消息到指定 chatID（如回复发指令的用户）。
-// content 当**纯文本**：MarkdownV2 转义在这里统一做，调用方不用再 EscapeMarkdownV2。
-func (t *Telegram) NotifyTo(ctx context.Context, chatID int64, content string) error {
-	// NewMessage 构造一个 MessageConfig 值（不是指针）。转义后再发。
-	msg := tgbotapi.NewMessage(chatID, tools.EscapeMarkdownV2(content))
-	msg.ParseMode = tgbotapi.ModeMarkdownV2 // 用 MarkdownV2 解析（所以上面统一转义）
-	msg.DisableWebPagePreview = false       // 允许链接预览
+// send 是所有发送路径的唯一出口：先取得限速许可，再真正发。
+//
+// 整个方法持有 mu，所以发送是全局串行的 —— 这正是想要的：
+// Telegram 的限额是按 bot 算的，不是按调用点算的。
+// 代价是 HN 推 20 条期间，/summary 的回复会排队等待。
+func (t *Telegram) send(ctx context.Context, msg tgbotapi.MessageConfig) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
-	// bot.Send 返回 (Message, error)；这里不关心成功的 Message，用 _ 丢弃。
-	if _, err := t.bot.Send(msg); err != nil {
-		slog.ErrorContext(ctx, "telegram单笔信息推送失败", "err", err)
-		return fmt.Errorf("telegram单笔信息推送失败: %w", err)
+	// time.Since(零值) 是一个巨大的正数，所以第一次发送 wait <= 0，不等待。
+	if wait := sendInterval - time.Since(t.lastSend); wait > 0 {
+		// 用 Timer 而不是 time.Sleep：这样等待期间可以被 ctx 取消。
+		timer := time.NewTimer(wait)
+		defer timer.Stop() // 提前返回时释放 timer，避免泄漏
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+
+	_, err := t.bot.Send(msg)
+	// 无论成功失败都更新时间戳：失败往往也是被服务端限速了，更该等。
+	t.lastSend = time.Now()
+	if err != nil {
+		return fmt.Errorf("telegram 消息推送失败: %w", err)
 	}
 	return nil
 }
 
-// NotifyBatch 发一批消息。
-// 实现策略：串行发，每条之间休息 1.5s，避免触发 Telegram 频率限制。
-// 注意：单条失败只记日志、不中断；ctx 取消才返回。
-func (t *Telegram) NotifyBatch(ctx context.Context, contents []string) error {
-	for _, content := range contents {
-		//fmt.Println(content) // 顺便也打印到 stdout，调试用
-		slog.InfoContext(ctx, content)
-		msg := tgbotapi.NewMessage(t.chatID, content)
-		msg.ParseMode = tgbotapi.ModeMarkdownV2
-		msg.DisableWebPagePreview = false
-		if _, err := t.bot.Send(msg); err != nil {
-			slog.ErrorContext(ctx, "telegram批量信息推送失败", "err", err)
-			// 注意：这里没 return，继续发下一条
-		}
+// NotifyTo 发一条消息到指定 chatID（如回复发指令的用户）。
+// content 当**纯文本**：MarkdownV2 转义在这里统一做，调用方不用再 EscapeMarkdownV2。
+func (t *Telegram) NotifyTo(ctx context.Context, chatID int64, content string) error {
+	msg := tgbotapi.NewMessage(chatID, tools.EscapeMarkdownV2(content))
+	msg.ParseMode = tgbotapi.ModeMarkdownV2
+	msg.DisableWebPagePreview = false
+	if err := t.send(ctx, msg); err != nil {
+		slog.ErrorContext(ctx, "telegram单笔信息推送失败", "err", err)
+		return err
+	}
+	return nil
+}
 
-		// 限速 sleep，但要支持被 ctx 取消。
-		// 直接 time.Sleep(1500ms) 也行，但 cancel 时还得睡完才能停 —— 不优雅。
-		// 用 select 同时等"ctx 取消"和"1.5s 到点"，谁先到走谁。
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(1500 * time.Millisecond):
-			// time.After(d) 返回一个 d 后会被写入的 channel；用完即丢弃，比 NewTimer 简单
-			// （注意：ctx 取消时 time.After 创建的 timer 还会跑完，有微小内存浪费 —— 高频场景才需要换 NewTimer）。
-		}
+// NotifyMarkdown 发一条**已渲染好的 MarkdownV2** 到默认 chat。
+// 与 Notify 的区别：不做整体转义 —— 调用方（monitor）已经把动态片段各自转义好了，
+// 再转一次会把 *加粗* 和 [链接](url) 的标记本身也转义掉。
+func (t *Telegram) NotifyMarkdown(ctx context.Context, content string) error {
+	slog.InfoContext(ctx, content)
+	msg := tgbotapi.NewMessage(t.chatID, content)
+	msg.ParseMode = tgbotapi.ModeMarkdownV2
+	msg.DisableWebPagePreview = false
+	if err := t.send(ctx, msg); err != nil {
+		slog.ErrorContext(ctx, "telegram预渲染消息推送失败", "err", err)
+		return err
 	}
 	return nil
 }
