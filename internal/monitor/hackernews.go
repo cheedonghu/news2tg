@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strconv" // 字符串和数字互转
 	"strings"
-	"sync"
 	"time"
 
 	// 第三方包：HTML 解析（类似 jQuery 的 API）
@@ -22,6 +21,7 @@ import (
 	"github.com/cheedonghu/news2tg/internal/logx"
 	"github.com/cheedonghu/news2tg/internal/model"
 	"github.com/cheedonghu/news2tg/internal/notify"
+	"github.com/cheedonghu/news2tg/internal/store"
 	"github.com/cheedonghu/news2tg/internal/tools"
 )
 
@@ -44,20 +44,18 @@ type HackerNews struct {
 	notifier   notify.Notifier
 	ai         ai.Helper      // 接口类型，运行时是 *ai.DeepSeek 的实例
 	digest     digest.Fetcher // 接口类型，运行时是 *digest.Python 的实例（后续可换 agent 渠道）
-
-	mu         sync.RWMutex
-	pushedURLs map[string]string // id（不是 URL！HN 用 ID 标识）→ yyyymmdd
+	store      store.Store    // 接口类型：推送记录持久化，实现是 SQLite
 }
 
 // NewHackerNews 构造函数。
-// 参数 aiHelper / digestFetcher 都用接口类型，便于测试时传 mock、便于日后换实现；返回 *HackerNews 指针。
-func NewHackerNews(httpClient *http.Client, notifier notify.Notifier, aiHelper ai.Helper, digestFetcher digest.Fetcher) *HackerNews {
+// 参数 aiHelper / digestFetcher / st 都用接口类型，便于测试时传 mock、便于日后换实现；返回 *HackerNews 指针。
+func NewHackerNews(httpClient *http.Client, notifier notify.Notifier, aiHelper ai.Helper, digestFetcher digest.Fetcher, st store.Store) *HackerNews {
 	return &HackerNews{
 		httpClient: httpClient,
 		notifier:   notifier,
 		ai:         aiHelper,
 		digest:     digestFetcher,
-		pushedURLs: make(map[string]string), // map 必须 make
+		store:      st,
 	}
 }
 
@@ -84,18 +82,9 @@ func (m *HackerNews) Run(ctx context.Context, cfg *config.Config) error {
 				slog.ErrorContext(cctx, "HN ai_transfer failed", "err", err)
 				continue // continue：跳到下一轮 for 循环
 			}
-			contents := make([]string, 0, len(processed))
-			for _, p := range processed {
-				contents = append(contents, p.Content)
-			}
-			for _, c := range contents {
-				if err := m.notifier.NotifyMarkdown(cctx, c); err != nil {
-					slog.ErrorContext(cctx, "HN 通知失败", "err", err)
-				}
-			}
+			// 逐条发送，发成功才记账。共用的实现见 monitor.go 的 deliver。
+			deliver(cctx, m.notifier, m.store, cfg.Telegram.ChatID, processed)
 		}
-
-		m.cleanOldURLs(time.Now())
 
 		// select 等"ctx 取消"或"ticker 到点"
 		select {
@@ -133,23 +122,41 @@ func (m *HackerNews) fetch(ctx context.Context, cfg *config.Config) ([]model.Not
 
 	var result []model.NotifyBase
 
-	for _, id := range hotIDs {
-		// process 返回 *model.NotifyBase（指针）；nil 表示"跳过这条"。
-		if out := m.process(ctx, id, cfg.Features.HnFetchTimeGap); out != nil {
-			// 注意：`if 变量 := ...; 条件 { ... }` 是 Go 的 if-init 语法，
-			// 变量 out 的作用域只在这个 if 块内。
-			out.Title = hotTitle          // 通过指针修改原值，不需要再赋回去
-			result = append(result, *out) // *out 是"解引用"，把指针指向的结构体拷贝进切片
-		}
-	}
-	for _, id := range newIDs {
-		if out := m.process(ctx, id, cfg.Features.HnFetchTimeGap); out != nil {
-			out.Title = newTitle
-			result = append(result, *out)
-		}
-	}
+	// 轮内去重：同一个 id 可能同时出现在 top 和 new 两个列表里。
+	// 与 v2ex 同理，不加锁是安全的 —— fetch 全程单 goroutine 顺序执行。
+	seen := make(map[string]bool)
+
+	result = m.collectHN(ctx, hotIDs, hotTitle, cfg.Features.HnFetchTimeGap, seen, result)
+	result = m.collectHN(ctx, newIDs, newTitle, cfg.Features.HnFetchTimeGap, seen, result)
 
 	return result, nil
+}
+
+// collectHN 把一个 id 列表里够格的帖子追加到 result 并返回。
+// 热帖和新帖两个列表的处理逻辑完全一致，只有分类抬头不同，所以抽出来共用。
+func (m *HackerNews) collectHN(ctx context.Context, ids []string, categoryTitle string, timeGap int, seen map[string]bool, result []model.NotifyBase) []model.NotifyBase {
+	for _, id := range ids {
+		if seen[id] {
+			continue // 本轮已经收过这条了
+		}
+		// 读失败时倾向"少推"：宁可漏几条，也不要在 DB 抖动时重发一整页。
+		pushed, err := m.store.AlreadyPushed(ctx, "hackernews", id)
+		if err != nil {
+			slog.ErrorContext(ctx, "查询推送记录失败，跳过本条", "id", id, "err", err)
+			continue
+		}
+		if pushed {
+			slog.InfoContext(ctx, "消息已经推送过", "id", id)
+			continue
+		}
+		// process 返回 *model.NotifyBase（指针）；nil 表示"跳过这条"。
+		if out := m.process(ctx, id, timeGap); out != nil {
+			out.Title = categoryTitle     // 通过指针修改原值，不需要再赋回去
+			result = append(result, *out) // *out 是"解引用"，把指针指向的结构体拷贝进切片
+			seen[id] = true
+		}
+	}
+	return result
 }
 
 // fetchIDs 调 Firebase 端点，返回 uint64 数组，转成字符串方便后续拼 URL。
@@ -198,12 +205,6 @@ func (m *HackerNews) fetchIDs(ctx context.Context, fetchURL string) ([]string, e
 // 返回 *NotifyBase 还是 nil：nil 表示"跳过"（已推过 / 太新 / 解析失败）。
 // 用指针返回的好处：调用方一个 nil 比较就能判断要不要处理。
 func (m *HackerNews) process(ctx context.Context, id string, timeGap int) *model.NotifyBase {
-	if m.alreadyPushed(id) {
-		// fmt.Printf 直接打印到 stdout（这里没用 slog 是历史原因，可以统一）
-		slog.InfoContext(ctx, "消息已经推送过", "id", id)
-		return nil
-	}
-
 	slog.InfoContext(ctx, "消息开始解析", "id", id)
 	//fmt.Printf("%s 开始解析id: %s\n", now.Format("2006年01月02日 15:04:05"), id)
 
@@ -245,7 +246,6 @@ func (m *HackerNews) process(ctx context.Context, id string, timeGap int) *model
 		out.ContentTransferedByAIFlag = true
 	}
 
-	m.markPushed(id)
 	return out
 }
 
@@ -308,34 +308,6 @@ func formatHNMessage(title, url, summary, origin string) string {
 		"源内容网页: ",
 		tools.EscapeMarkdownV2(origin),
 	)
-}
-
-// 去重三件套：和 V2EX 同构，差别只在 cleanOldURLs 的窗口大小。
-
-func (m *HackerNews) alreadyPushed(id string) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	_, ok := m.pushedURLs[id]
-	return ok
-}
-
-func (m *HackerNews) markPushed(id string) {
-	date := time.Now().Format("20060102")
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.pushedURLs[id] = date
-}
-
-// HN 留 15 天（V2EX 只留 5 天），因为 HN 的 top 帖子在榜时间长，避免重复推。
-func (m *HackerNews) cleanOldURLs(now time.Time) {
-	cutoff := now.AddDate(0, 0, -15).Format("20060102")
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for id, date := range m.pushedURLs {
-		if date < cutoff {
-			delete(m.pushedURLs, id)
-		}
-	}
 }
 
 // judgeNewsDate 解析 HN 帖子页 HTML 的 "<n> hours ago" 文案。

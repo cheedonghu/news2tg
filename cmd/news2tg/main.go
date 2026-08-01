@@ -121,7 +121,7 @@ func main() {
 	// 9) 构造各个组件
 	aiClient := ai.NewDeepSeek(cfg.DeepSeek.APIToken, cfg.DeepSeek.Model)
 	digestFetcher := digest.NewPython(httpClient) // 当前用 Python sidecar；后续可换 agent 渠道
-	hnMon := monitor.NewHackerNews(httpClient, tgClient, aiClient, digestFetcher)
+	hnMon := monitor.NewHackerNews(httpClient, tgClient, aiClient, digestFetcher, pushStore)
 	v2exMon := monitor.NewV2EX(httpClient, tgClient, pushStore)
 
 	// 9.1) 组装总结 agent：python（优先）+ jina（回退）两个提取器，复用 DeepSeek key。
