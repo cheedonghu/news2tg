@@ -112,7 +112,7 @@ func main() {
 
 	// 9.1) 组装总结 agent：python（优先）+ jina（回退）两个提取器，复用 DeepSeek key。
 	jinaFetcher := digest.NewJina(httpClient, cfg.Jina.APIToken)
-	summaryAgent := agent.NewAgent(cfg.DeepSeek.APIToken, digestFetcher, jinaFetcher)
+	summaryAgent := agent.NewAgent(cfg.DeepSeek.APIToken, cfg.DeepSeek.AgentModel, digestFetcher, jinaFetcher)
 
 	// 9.2) 解析白名单 user id（字符串 → int64，坏值仅 log 跳过）。
 	adminIDs := make([]int64, 0, len(cfg.Telegram.AdminIDs))

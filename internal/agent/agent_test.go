@@ -36,7 +36,7 @@ func TestAgentSummarize(t *testing.T) {
 	python := digest.NewPython(httpClient)
 	jina := digest.NewJina(httpClient, cfg.Jina.APIToken)
 
-	a := NewAgent(cfg.DeepSeek.APIToken, python, jina)
+	a := NewAgent(cfg.DeepSeek.APIToken, cfg.DeepSeek.AgentModel, python, jina)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -54,4 +54,13 @@ func TestAgentSummarize(t *testing.T) {
 	}
 
 	t.Logf("agent 总结结果:\n%s", summary)
+}
+
+// TestNewAgentModel 验证构造函数把模型名存了下来（同包测试，可读未导出字段）。
+// 传 nil 作为两个 Fetcher：构造函数只是把它们塞进 map，不会调用，所以安全。
+func TestNewAgentModel(t *testing.T) {
+	a := NewAgent("fake-key", "some-model", nil, nil)
+	if a.model != "some-model" {
+		t.Errorf("model = %q, want %q", a.model, "some-model")
+	}
 }

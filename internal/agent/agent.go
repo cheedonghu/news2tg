@@ -26,10 +26,6 @@ const (
 	toolJina   = "extract_with_jina"
 )
 
-// defaultModel 用支持工具调用（function calling）的 DeepSeek 模型。
-// 注意：ai/deepseek.go 里用的 "deepseek-v4-flash" 不一定支持 tools，所以这里单列。
-const defaultModel = "deepseek-chat"
-
 // defaultMaxSteps 限制 agent 循环步数，防止模型反复调工具不收敛。
 const defaultMaxSteps = 3
 
@@ -57,13 +53,15 @@ type Agent struct {
 }
 
 // NewAgent 构造函数。
-// apiKey 复用 DeepSeek 的 key；python / jina 都是 digest.Fetcher（用接口便于换实现/测试）。
-func NewAgent(apiKey string, python, jina digest.Fetcher) *Agent {
+// apiKey 复用 DeepSeek 的 key；model 由 main 从 [deepseek] agent_model 传入，
+// 必须是支持 function calling 的模型，否则下面的 toolDefs 形同虚设。
+// python / jina 都是 digest.Fetcher（用接口便于换实现/测试）。
+func NewAgent(apiKey, model string, python, jina digest.Fetcher) *Agent {
 	cfg := openai.DefaultConfig(apiKey)
 	cfg.BaseURL = "https://api.deepseek.com/v1" // 同 ai/deepseek.go：DeepSeek 兼容 OpenAI 协议
 	return &Agent{
 		llm:   openai.NewClientWithConfig(cfg),
-		model: defaultModel,
+		model: model,
 		tools: map[string]digest.Fetcher{
 			toolPython: python,
 			toolJina:   jina,
