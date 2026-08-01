@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -32,7 +33,12 @@ type Telegram struct {
 // NewTelegram 构造函数。第一次调用时 SDK 会发请求验 token，所以可能返回 error。
 // 返回 (*Telegram, error)：成功 = 指针 + nil，失败 = nil + error。
 func NewTelegram(token string, chatID int64) (*Telegram, error) {
-	bot, err := tgbotapi.NewBotAPI(token)
+	// 这里必须显式传一个带超时的 *http.Client，不能用 tgbotapi.NewBotAPI 默认的 &http.Client{}（零 Timeout）。
+	// 原因：send 方法把 t.mu 一路持有到 t.bot.Send(msg) 这次网络调用返回为止（见下方 send 的注释），
+	// 而 bot.Send 又不接受 ctx、无法从外部取消。如果 HTTP 客户端没有超时，一次卡住的 TCP 连接
+	// 就会让这把锁永远拿不到，冻结进程里所有发送路径（weather、v2ex、hackernews、/summary 回复……）。
+	// 30s 是一个足够宽松、不会误伤正常请求，又能兜底网络异常的超时值。
+	bot, err := tgbotapi.NewBotAPIWithClient(token, tgbotapi.APIEndpoint, &http.Client{Timeout: 30 * time.Second})
 	if err != nil {
 		// fmt.Errorf + %w：包装原错误，保留底层信息便于 errors.Is/As 判断。
 		return nil, fmt.Errorf("init telegram bot: %w", err)
