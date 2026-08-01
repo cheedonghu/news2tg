@@ -88,6 +88,12 @@ type Jina struct {
 	APIToken string `toml:"api_token"`
 }
 
+// Storage 段：推送记录数据库文件路径。
+// 和模型名一样不留 Go 侧默认值 —— "库放哪"只有配置文件一个答案，缺了就启动失败。
+type Storage struct {
+	DBPath string `toml:"db_path"`
+}
+
 // Config 是顶层配置结构，对应整个 config.toml。
 // 字段名前的 toml tag 把 Go 字段映射到 TOML 的 [table] 名。
 type Config struct {
@@ -95,6 +101,7 @@ type Config struct {
 	Features Features `toml:"features"`
 	DeepSeek DeepSeek `toml:"deepseek"`
 	Jina     Jina     `toml:"jina"`
+	Storage  Storage  `toml:"storage"` // 新增
 }
 
 // FromFile 读取并解析配置文件。
@@ -114,6 +121,9 @@ func FromFile(path string) (*Config, error) {
 	}
 	if strings.TrimSpace(cfg.DeepSeek.AgentModel) == "" {
 		return nil, fmt.Errorf("[deepseek] agent_model 未配置")
+	}
+	if strings.TrimSpace(cfg.Storage.DBPath) == "" {
+		return nil, fmt.Errorf("[storage] db_path 未配置")
 	}
 	return &cfg, nil
 }

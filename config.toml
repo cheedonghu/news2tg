@@ -46,3 +46,9 @@ agent_model = "deepseek-chat"
 # jina reader(r.jina.ai) 的 key，agent 回退提取渠道用；留空则走免认证公开端点
 [jina]
 api_token="key"
+
+# 推送记录数据库（SQLite 文件）。容器里对应 docker-compose 挂载的 ./data 卷。
+# 本地开发可指到 ./target/dev.db（target/ 已在 .gitignore 里）。
+# 留空会导致启动失败——代码里没有默认值。
+[storage]
+db_path = "/data/news2tg.db"

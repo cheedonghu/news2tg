@@ -24,6 +24,7 @@ import (
 	"github.com/cheedonghu/news2tg/internal/logx"
 	"github.com/cheedonghu/news2tg/internal/monitor"
 	"github.com/cheedonghu/news2tg/internal/notify"
+	"github.com/cheedonghu/news2tg/internal/store"
 )
 
 // 初始化slog：JSON handler 外面再包一层 logx.Handler，
@@ -84,6 +85,19 @@ func main() {
 	if err := tgClient.Notify(ctx, startupText); err != nil {
 		slog.Error("failed to send startup notification")
 	}
+
+	// 7.5) 打开推送记录数据库。
+	// 打不开就退出：去重是核心功能，静默降级会让人在不知情的情况下重复刷屏。
+	// 这条同时兜住"忘了在 docker-compose 里加 ./data:/data 挂载"的场景。
+	pushStore, err := store.OpenSQLite(cfg.Storage.DBPath)
+	if err != nil {
+		slog.Error("failed to open push record store", "path", cfg.Storage.DBPath, "err", err)
+		os.Exit(1)
+	}
+	// defer 在 main 正常返回时执行；注意上面那些 os.Exit 路径不会触发 defer，
+	// 但那时进程已经要死了，OS 会回收 fd，不影响。
+	defer pushStore.Close()
+	slog.Info("push record store opened", "path", cfg.Storage.DBPath)
 
 	// 8) 共享 HTTP 客户端：连接池、超时配置全集中在这里。
 	// &http.Client{...} 取地址：拿到 *http.Client 指针，方便共享同一个连接池。

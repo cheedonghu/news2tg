@@ -62,6 +62,9 @@ func TestFromFileDeepSeekModel(t *testing.T) {
 api_token = "k"
 model = "deepseek-v4-flash"
 agent_model = "deepseek-chat"
+
+[storage]
+db_path = "./target/dev.db"
 `)
 	cfg, err := FromFile(path)
 	if err != nil {
