@@ -9,7 +9,6 @@ import (
 	"log/slog"      // Go 1.21+ 官方结构化日志
 	"net/http"      // HTTP 客户端/服务端
 	"strings"       // 字符串处理（Contains / ToLower 等）
-	"sync"          // 并发原语（Mutex、RWMutex、WaitGroup 等）
 	"time"          // 时间/定时器
 
 	// 本项目内部包
@@ -17,6 +16,7 @@ import (
 	"github.com/cheedonghu/news2tg/internal/logx"
 	"github.com/cheedonghu/news2tg/internal/model"
 	"github.com/cheedonghu/news2tg/internal/notify"
+	"github.com/cheedonghu/news2tg/internal/store"
 	"github.com/cheedonghu/news2tg/internal/tools"
 )
 
@@ -36,25 +36,28 @@ const (
 type V2EX struct {
 	httpClient *http.Client    // 指针：HTTP 客户端是共享资源（连接池），不要拷贝
 	notifier   notify.Notifier // 接口类型：通过依赖注入，测试时可以传 mock
+	store      store.Store     // 接口类型：推送记录持久化，实现是 SQLite
 
-	mu         sync.RWMutex      // 读写锁：保护下面这个 map（map 在 Go 里不是线程安全的）
-	pushedURLs map[string]string // map[键类型]值类型；这里是 url → yyyymmdd
+	// 端点地址做成字段（默认取上面的常量），只为让测试能指向 httptest 服务器。
+	hotURL    string
+	latestURL string
 }
 
 // NewV2EX 是"构造函数"。Go 没有 constructor 语法，约定用 New<Type> 函数代替。
 // 返回 *V2EX（指针），让调用方拿到的是同一个实例，不会被拷贝。
-func NewV2EX(httpClient *http.Client, notifier notify.Notifier) *V2EX {
+func NewV2EX(httpClient *http.Client, notifier notify.Notifier, st store.Store) *V2EX {
 	// &V2EX{...} 创建结构体并返回其地址；这是 Go 里最常见的"new 一个对象"写法。
 	return &V2EX{
 		httpClient: httpClient,
 		notifier:   notifier,
-		// map 必须用 make 初始化，否则是 nil，写入会 panic。
-		pushedURLs: make(map[string]string),
+		store:      st,
+		hotURL:     v2exHotURL,
+		latestURL:  v2exLatestURL,
 	}
 }
 
 // Run 是 V2EX 的方法。`(m *V2EX)` 叫"receiver"（接收者），
-// 写成指针 *V2EX 是因为方法里要修改 m.pushedURLs；如果只读，可以写值 receiver `(m V2EX)`。
+// 写成指针 *V2EX 是为了避免每次调用都拷贝 httpClient/notifier/store 这些字段；
 // 实践中只要结构体不是几个字段的小值类型，几乎都用指针 receiver，避免拷贝。
 //
 // 由于这个方法签名和 Monitor 接口里的 Run 一致，*V2EX 就自动"实现"了 Monitor 接口。
@@ -91,21 +94,9 @@ func (m *V2EX) Run(ctx context.Context, cfg *config.Config) error {
 
 		// len() 是内置函数，对切片/数组/map/字符串都能用。
 		if len(results) > 0 {
-			// make([]T, 长度, 容量)：预分配容量避免 append 时反复扩容。
-			contents := make([]string, 0, len(results))
-			// for range：遍历切片，第一个返回值是下标（这里用 _ 丢弃），第二个是元素。
-			for _, r := range results {
-				// append 给切片追加元素。注意必须用返回值赋回去（切片可能扩容换底层数组）。
-				contents = append(contents, r.Content)
-			}
-			for _, c := range contents {
-				if err := m.notifier.NotifyMarkdown(cctx, c); err != nil {
-					slog.ErrorContext(cctx, "V2EX 通知失败", "err", err)
-				}
-			}
+			// 逐条发送，发成功才记账。共用的实现见 monitor.go 的 deliver。
+			deliver(cctx, m.notifier, m.store, cfg.Telegram.ChatID, results)
 		}
-
-		m.cleanOldURLs(time.Now())
 	}
 }
 
@@ -116,7 +107,7 @@ func (m *V2EX) fetch(ctx context.Context, cfg *config.Config) ([]model.NotifyBas
 	var hotTopics, newTopics []model.Topic
 
 	if cfg.Features.V2exFetchHot {
-		topics, err := m.fetchTopics(ctx, v2exHotURL)
+		topics, err := m.fetchTopics(ctx, m.hotURL)
 		if err != nil {
 			slog.ErrorContext(ctx, "v2ex fetch_hot error", "err", err)
 		} else {
@@ -124,7 +115,7 @@ func (m *V2EX) fetch(ctx context.Context, cfg *config.Config) ([]model.NotifyBas
 		}
 	}
 	if cfg.Features.V2exFetchLatest {
-		topics, err := m.fetchTopics(ctx, v2exLatestURL)
+		topics, err := m.fetchTopics(ctx, m.latestURL)
 		if err != nil {
 			slog.ErrorContext(ctx, "v2ex fetch_new error", "err", err)
 		} else {
@@ -135,17 +126,31 @@ func (m *V2EX) fetch(ctx context.Context, cfg *config.Config) ([]model.NotifyBas
 	// 函数内的 const 也是合法的，作用域只在本函数内。
 	const hotTitle = "热帖推送"
 	const newTitle = "新帖推送"
-	// time.Now() 当前时间；Format 的参数是固定的"参考时间" 2006-01-02 15:04:05，
-	// 这是 Go 独特的格式化方式（不是 yyyy-MM-dd），记住就好。
-	currentDate := time.Now().Format("20060102")
 
 	var result []model.NotifyBase // nil 切片，append 会按需创建底层数组
+
+	// 轮内去重：同一个 URL 可能同时出现在热帖和新帖列表里。
+	// 改造前靠"抓取时立即写库"挡住，现在写库后移到发送成功之后，需要这个局部集合顶上。
+	//
+	// 不加锁是安全的：fetch 全程在单个 goroutine 里顺序执行（上面两个 fetchTopics
+	// 是串行调用，没有 go 关键字）。若将来改成并行抓取，这里必须加锁。
+	seen := make(map[string]bool)
 
 	// 热帖：不走过滤，直接全推
 	for _, topic := range hotTopics {
 		// 注意：range 出来的 topic 是值的"拷贝"。要原值用 topics[i]。
-		if m.alreadyPushed(topic.URL) {
-			continue // 跳过本次循环
+		if seen[topic.URL] {
+			continue // 本轮已经收过这条了
+		}
+		// AlreadyPushed 读失败时倾向"少推"：宁可漏几条，也不要在 DB 抖动时
+		// 把整页热帖重发一遍炸频道。
+		pushed, err := m.store.AlreadyPushed(ctx, "v2ex", topic.URL)
+		if err != nil {
+			slog.ErrorContext(ctx, "查询推送记录失败，跳过本条", "url", topic.URL, "err", err)
+			continue
+		}
+		if pushed {
+			continue
 		}
 		title := tools.TruncateUTF8(topic.Title, 4000)
 		contentTitle := tools.EscapeMarkdownV2(title)
@@ -159,12 +164,22 @@ func (m *V2EX) fetch(ctx context.Context, cfg *config.Config) ([]model.NotifyBas
 			Content:    fmt.Sprintf("*%s*: [%s](%s)\n", hotTitle, contentTitle, topic.URL),
 		}
 		result = append(result, out)
-		m.markPushed(topic.URL, currentDate)
+		seen[topic.URL] = true
 	}
 
 	// 新帖：走 filterNewTopic（关键字 OR 节点）
 	for _, topic := range newTopics {
-		if m.alreadyPushed(topic.URL) {
+		if seen[topic.URL] {
+			continue // 本轮已经收过这条了
+		}
+		// AlreadyPushed 读失败时倾向"少推"：宁可漏几条，也不要在 DB 抖动时
+		// 把整页热帖重发一遍炸频道。
+		pushed, err := m.store.AlreadyPushed(ctx, "v2ex", topic.URL)
+		if err != nil {
+			slog.ErrorContext(ctx, "查询推送记录失败，跳过本条", "url", topic.URL, "err", err)
+			continue
+		}
+		if pushed {
 			continue
 		}
 		title := tools.TruncateUTF8(topic.Title, 4000)
@@ -184,7 +199,7 @@ func (m *V2EX) fetch(ctx context.Context, cfg *config.Config) ([]model.NotifyBas
 			Content:    fmt.Sprintf("*%s*: [%s](%s)\n", newTitle, contentTitle, topic.URL),
 		}
 		result = append(result, out)
-		m.markPushed(topic.URL, currentDate)
+		seen[topic.URL] = true
 	}
 
 	return result, nil // 多返回值用逗号分隔
@@ -220,40 +235,6 @@ func (m *V2EX) fetchTopics(ctx context.Context, url string) ([]model.Topic, erro
 		return nil, fmt.Errorf("parse json: %w", err)
 	}
 	return topics, nil
-}
-
-// 下面三个方法实现"按 URL 去重 + 按日期滑窗清理"。
-// 进程重启会丢失这个 map（无持久化），这是已知妥协。
-
-// alreadyPushed 用读锁（RLock）：多个 goroutine 可以同时读。
-func (m *V2EX) alreadyPushed(url string) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock() // defer 解锁：哪怕中间 panic，也不会死锁
-	// 从 map 取值：返回"值, 是否存在"。第二返回值习惯叫 ok。
-	_, ok := m.pushedURLs[url]
-	return ok
-}
-
-// markPushed 用写锁（Lock）：独占，写期间没有读也没有写。
-func (m *V2EX) markPushed(url, date string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.pushedURLs[url] = date // map 写入：和读语法一样，但左值写法
-}
-
-// cleanOldURLs 删超过 5 天的记录。
-// 用字符串比较 yyyymmdd 是 OK 的：字典序刚好等于时间序。
-func (m *V2EX) cleanOldURLs(now time.Time) {
-	// AddDate(年, 月, 日)，负数表示往前推。
-	cutoff := now.AddDate(0, 0, -5).Format("20060102")
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	// range map 同时拿到 key 和 value；Go 在循环中删除 map 元素是安全的（特例！slice 不行）。
-	for url, date := range m.pushedURLs {
-		if date < cutoff {
-			delete(m.pushedURLs, url) // 内置函数 delete，第一个参数是 map，第二个是 key
-		}
-	}
 }
 
 // filterNewTopic 决定一条"新帖"要不要推送。
