@@ -105,7 +105,7 @@ func main() {
 	}
 
 	// 9) 构造各个组件
-	aiClient := ai.NewDeepSeek(cfg.DeepSeek.APIToken)
+	aiClient := ai.NewDeepSeek(cfg.DeepSeek.APIToken, cfg.DeepSeek.Model)
 	digestFetcher := digest.NewPython(httpClient) // 当前用 Python sidecar；后续可换 agent 渠道
 	hnMon := monitor.NewHackerNews(httpClient, tgClient, aiClient, digestFetcher)
 	v2exMon := monitor.NewV2EX(httpClient, tgClient)

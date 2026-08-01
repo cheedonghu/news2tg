@@ -15,6 +15,9 @@ import (
 // 把 BaseURL 换成 DeepSeek 的地址即可。
 type DeepSeek struct {
 	client *openai.Client // SDK 客户端，内部维护 HTTP client
+	// 模型名，由 main 从 [deepseek] model 传入。
+	// 不写死是为了换模型只改配置重启，不用重新编译。
+	model string
 	// 上下文窗口大小
 	contextLength int
 	// AI总结后给用户阅读的最大长度
@@ -22,10 +25,11 @@ type DeepSeek struct {
 }
 
 // NewDeepSeek 构造函数。注意没有返回 error：这里只是配置，没真发请求。
-func NewDeepSeek(apiKey string) *DeepSeek {
+// model 由调用方（main）从配置传入，非空性已在 config.FromFile 里校验过。
+func NewDeepSeek(apiKey, model string) *DeepSeek {
 	cfg := openai.DefaultConfig(apiKey)         // 默认配置（OpenAI 官方地址）
 	cfg.BaseURL = "https://api.deepseek.com/v1" // 改成 DeepSeek 的地址
-	return &DeepSeek{client: openai.NewClientWithConfig(cfg), contextLength: 60000, readerLength: 2000}
+	return &DeepSeek{client: openai.NewClientWithConfig(cfg), model: model, contextLength: 60000, readerLength: 2000}
 }
 
 // Summarize 实现 Helper 接口；签名一致就自动算"实现了"。
@@ -51,7 +55,7 @@ func (d *DeepSeek) Summarize(ctx context.Context, content string) (string, error
 	// 调 SDK：CreateChatCompletion 是 OpenAI Chat Completions 的标准调用。
 	// 入参是结构体字面量，复杂请求一目了然。
 	resp, err := d.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model: "deepseek-v4-flash",
+		Model: d.model,
 		Messages: []openai.ChatCompletionMessage{
 			// 单条 user 消息；多轮对话会塞多个进去（system / user / assistant 轮流）。
 			{Role: openai.ChatMessageRoleUser, Content: prompt},
@@ -86,7 +90,7 @@ func (d *DeepSeek) Advise(ctx context.Context, weatherText string) (string, erro
 	)
 
 	resp, err := d.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model: "deepseek-v4-flash", // 与 Summarize 同款轻量模型
+		Model: d.model, // 与 Summarize 同一个配置项
 		Messages: []openai.ChatCompletionMessage{
 			{Role: openai.ChatMessageRoleUser, Content: prompt},
 		},
