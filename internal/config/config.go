@@ -123,7 +123,7 @@ func FromFile(path string) (*Config, error) {
 		return nil, fmt.Errorf("[deepseek] agent_model 未配置")
 	}
 	if strings.TrimSpace(cfg.Storage.DBPath) == "" {
-		return nil, fmt.Errorf("[storage] db_path 未配置")
+		return nil, fmt.Errorf("[storage] db_path 未配置（本次升级新增的必填项，参考 config.toml 模板）")
 	}
 	return &cfg, nil
 }

@@ -144,7 +144,7 @@ func (m *V2EX) fetch(ctx context.Context, cfg *config.Config) ([]model.NotifyBas
 		}
 		// AlreadyPushed 读失败时倾向"少推"：宁可漏几条，也不要在 DB 抖动时
 		// 把整页热帖重发一遍炸频道。
-		pushed, err := m.store.AlreadyPushed(ctx, "v2ex", topic.URL)
+		pushed, err := m.store.AlreadyPushed(ctx, store.SourceV2EX, topic.URL)
 		if err != nil {
 			slog.ErrorContext(ctx, "查询推送记录失败，跳过本条", "url", topic.URL, "err", err)
 			continue
@@ -156,7 +156,7 @@ func (m *V2EX) fetch(ctx context.Context, cfg *config.Config) ([]model.NotifyBas
 		contentTitle := tools.EscapeMarkdownV2(title)
 		// 字面量初始化结构体：字段名: 值，逗号结尾（包括最后一个，Go 强制要求）。
 		out := model.NotifyBase{
-			Source:     "v2ex",
+			Source:     store.SourceV2EX,
 			ExternalID: topic.URL, // v2ex 用帖子 URL 作为去重键
 			Title:      title,
 			PostTitle:  title, // v2ex 的抬头就是帖子标题，两者相同
@@ -174,7 +174,7 @@ func (m *V2EX) fetch(ctx context.Context, cfg *config.Config) ([]model.NotifyBas
 		}
 		// AlreadyPushed 读失败时倾向"少推"：宁可漏几条，也不要在 DB 抖动时
 		// 把整页热帖重发一遍炸频道。
-		pushed, err := m.store.AlreadyPushed(ctx, "v2ex", topic.URL)
+		pushed, err := m.store.AlreadyPushed(ctx, store.SourceV2EX, topic.URL)
 		if err != nil {
 			slog.ErrorContext(ctx, "查询推送记录失败，跳过本条", "url", topic.URL, "err", err)
 			continue
@@ -191,7 +191,7 @@ func (m *V2EX) fetch(ctx context.Context, cfg *config.Config) ([]model.NotifyBas
 		}
 		contentTitle := tools.EscapeMarkdownV2(title)
 		out := model.NotifyBase{
-			Source:     "v2ex",
+			Source:     store.SourceV2EX,
 			ExternalID: topic.URL,
 			Title:      title,
 			PostTitle:  title,

@@ -59,6 +59,13 @@ func (t *Telegram) Notify(ctx context.Context, content string) error {
 // Telegram 的限额是按 bot 算的，不是按调用点算的。
 // 代价是 HN 推 20 条期间，/summary 的回复会排队等待。
 func (t *Telegram) send(ctx context.Context, msg tgbotapi.MessageConfig) error {
+	// 先看 ctx 是否已取消：bot.Send 不接受 ctx，一旦进去就拦不住了。
+	// 这个检查必须在抢锁之前，也必须独立于下面的限速等待 ——
+	// 距上次发送超过 sendInterval 时不会进入等待分支，那条路径同样需要被 ctx 拦住。
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 

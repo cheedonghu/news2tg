@@ -140,7 +140,7 @@ func (m *HackerNews) collectHN(ctx context.Context, ids []string, categoryTitle 
 			continue // 本轮已经收过这条了
 		}
 		// 读失败时倾向"少推"：宁可漏几条，也不要在 DB 抖动时重发一整页。
-		pushed, err := m.store.AlreadyPushed(ctx, "hackernews", id)
+		pushed, err := m.store.AlreadyPushed(ctx, store.SourceHackerNews, id)
 		if err != nil {
 			slog.ErrorContext(ctx, "查询推送记录失败，跳过本条", "id", id, "err", err)
 			continue
@@ -227,7 +227,7 @@ func (m *HackerNews) process(ctx context.Context, id string, timeGap int) *model
 
 	// 这里用 &model.NotifyBase{...} 拿到指针，后面才能给 out.Content 赋值并返回出去。
 	out := &model.NotifyBase{
-		Source:     "hackernews",
+		Source:     store.SourceHackerNews,
 		ExternalID: id, // HN 用帖子数字 id 作为去重键，不是 URL
 		URL:        pageURL,
 		OriginURL:  originURL,

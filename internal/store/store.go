@@ -10,6 +10,14 @@ import (
 	"time"    // 记录推送时刻
 )
 
+// 来源标识：写入 Record.Source 和查询 AlreadyPushed 时必须用同一个值，
+// 所以提到这里定义一次 —— 两侧各写一个字符串字面量的话，
+// 一旦分叉 AlreadyPushed 会永远查不到，导致每轮重推整个列表。
+const (
+	SourceV2EX       = "v2ex"
+	SourceHackerNews = "hackernews"
+)
+
 // Record 是一条推送记录。
 // 字段首字母大写 = 包外可见（monitor 要构造它）。
 type Record struct {
