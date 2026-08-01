@@ -219,15 +219,18 @@ func (m *HackerNews) process(ctx context.Context, id string, timeGap int) *model
 		return nil
 	}
 
-	originURL, err := getNewsOriginURL(ctx, body)
+	originURL, postTitle, err := getNewsOriginInfo(ctx, body)
 	if err != nil {
 		return nil
 	}
 
 	// 这里用 &model.NotifyBase{...} 拿到指针，后面才能给 out.Content 赋值并返回出去。
 	out := &model.NotifyBase{
-		URL:       pageURL,
-		OriginURL: originURL,
+		Source:     "hackernews",
+		ExternalID: id, // HN 用帖子数字 id 作为去重键，不是 URL
+		URL:        pageURL,
+		OriginURL:  originURL,
+		PostTitle:  postTitle, // Title 稍后会被 fetch 覆盖成分类抬头，所以标题单独存这里
 	}
 
 	// 局部变量取名 content，避免和 import 进来的 digest 包名冲突。
@@ -386,37 +389,38 @@ func judgeNewsDate(ctx context.Context, htmlBody string, timeGap int) bool {
 	return false
 }
 
-// getNewsOriginURL 从 HN 帖子页提取原文链接。
-// 返回 "" + nil 表示"没找到 / 格式异常"，调用方据此跳过。
-func getNewsOriginURL(ctx context.Context, htmlBody string) (string, error) {
-	//fmt.Printf("%s 开始解析源网址\n", time.Now().Format("2006年01月02日 15:04:05"))
+// getNewsOriginInfo 从 HN 帖子页同时提取原文链接和帖子标题。
+// 两者来自同一个元素（span.titleline a 的 href 与文本），一次解析取两个值，
+// 省掉再解析一遍 HTML 的开销。
+//
+// 返回 error 表示"没找到 / 格式异常"，调用方据此跳过这条帖子。
+func getNewsOriginInfo(ctx context.Context, htmlBody string) (string, string, error) {
 	slog.InfoContext(ctx, "开始解析源网址")
 
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Find 返回的是匹配集合；First 取第一个
 	sel := doc.Find("span.titleline a").First()
 	if sel.Length() == 0 {
-		//fmt.Println("span.titleline a 没找到对应内容")
-		return "", errors.New("span.titleline a 没找到对应内容")
+		return "", "", errors.New("span.titleline a 没找到对应内容")
 	}
 	// Attr 返回"属性值, 是否存在"；ok==false 表示这个属性根本不存在
 	href, ok := sel.Attr("href")
 	if !ok {
-		//fmt.Println("未找到源网址")
-		return "", errors.New("未找到源网址")
+		return "", "", errors.New("未找到源网址")
 	}
-	//fmt.Printf("识别到的源网址为: %s\n", href)
-	slog.InfoContext(ctx, "识别到的源网址为", "href", href)
+	// 标题就是这个 <a> 的文本；TrimSpace 去掉 HTML 里的换行和缩进空白。
+	postTitle := strings.TrimSpace(sel.Text())
+
+	slog.InfoContext(ctx, "识别到的源网址为", "href", href, "title", postTitle)
 	// 兜底：相对路径如 "item?id=..." 不算外链，跳过。
 	if !strings.HasPrefix(href, "http") {
-		//fmt.Println("识别到的源网址格式异常")
-		return "", errors.New("识别到的源网址格式异常")
+		return "", "", errors.New("识别到的源网址格式异常")
 	}
-	return href, nil
+	return href, postTitle, nil
 }
 
 // takeN 是泛型函数：[T any] 表示 T 可以是任意类型。

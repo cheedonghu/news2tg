@@ -151,9 +151,12 @@ func (m *V2EX) fetch(ctx context.Context, cfg *config.Config) ([]model.NotifyBas
 		contentTitle := tools.EscapeMarkdownV2(title)
 		// 字面量初始化结构体：字段名: 值，逗号结尾（包括最后一个，Go 强制要求）。
 		out := model.NotifyBase{
-			Title:   title,
-			URL:     topic.URL,
-			Content: fmt.Sprintf("*%s*: [%s](%s)\n", hotTitle, contentTitle, topic.URL),
+			Source:     "v2ex",
+			ExternalID: topic.URL, // v2ex 用帖子 URL 作为去重键
+			Title:      title,
+			PostTitle:  title, // v2ex 的抬头就是帖子标题，两者相同
+			URL:        topic.URL,
+			Content:    fmt.Sprintf("*%s*: [%s](%s)\n", hotTitle, contentTitle, topic.URL),
 		}
 		result = append(result, out)
 		m.markPushed(topic.URL, currentDate)
@@ -173,9 +176,12 @@ func (m *V2EX) fetch(ctx context.Context, cfg *config.Config) ([]model.NotifyBas
 		}
 		contentTitle := tools.EscapeMarkdownV2(title)
 		out := model.NotifyBase{
-			Title:   title,
-			URL:     topic.URL,
-			Content: fmt.Sprintf("*%s*: [%s](%s)\n", newTitle, contentTitle, topic.URL),
+			Source:     "v2ex",
+			ExternalID: topic.URL,
+			Title:      title,
+			PostTitle:  title,
+			URL:        topic.URL,
+			Content:    fmt.Sprintf("*%s*: [%s](%s)\n", newTitle, contentTitle, topic.URL),
 		}
 		result = append(result, out)
 		m.markPushed(topic.URL, currentDate)
