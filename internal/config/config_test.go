@@ -79,29 +79,29 @@ agent_model = "deepseek-chat"
 // 这是「模型名唯一真相源是配置文件」这条设计的守门测试。
 func TestFromFileMissingModel(t *testing.T) {
 	cases := []struct {
-		name    string
-		content string
-		wantKey string // 期望错误信息里出现的配置项名
+		name        string
+		content     string
+		wantErrText string // 期望的完整错误信息（不是子串式的配置项名，避免 "model" 误命中 "agent_model"）
 	}{
 		{
-			name:    "缺 model",
-			content: "[deepseek]\napi_token = \"k\"\nagent_model = \"deepseek-chat\"\n",
-			wantKey: "model",
+			name:        "缺 model",
+			content:     "[deepseek]\napi_token = \"k\"\nagent_model = \"deepseek-chat\"\n",
+			wantErrText: "[deepseek] model 未配置",
 		},
 		{
-			name:    "缺 agent_model",
-			content: "[deepseek]\napi_token = \"k\"\nmodel = \"deepseek-v4-flash\"\n",
-			wantKey: "agent_model",
+			name:        "缺 agent_model",
+			content:     "[deepseek]\napi_token = \"k\"\nmodel = \"deepseek-v4-flash\"\n",
+			wantErrText: "[deepseek] agent_model 未配置",
 		},
 		{
-			name:    "model 只有空白字符",
-			content: "[deepseek]\napi_token = \"k\"\nmodel = \"   \"\nagent_model = \"deepseek-chat\"\n",
-			wantKey: "model",
+			name:        "model 只有空白字符",
+			content:     "[deepseek]\napi_token = \"k\"\nmodel = \"   \"\nagent_model = \"deepseek-chat\"\n",
+			wantErrText: "[deepseek] model 未配置",
 		},
 		{
-			name:    "整个 deepseek 段缺失",
-			content: "[telegram]\napi_token = \"t\"\n",
-			wantKey: "model",
+			name:        "整个 deepseek 段缺失",
+			content:     "[telegram]\napi_token = \"t\"\n",
+			wantErrText: "[deepseek] model 未配置",
 		},
 	}
 	for _, c := range cases {
@@ -114,8 +114,8 @@ func TestFromFileMissingModel(t *testing.T) {
 			if cfg != nil {
 				t.Errorf("报错时应返回 nil *Config，实际 %+v", cfg)
 			}
-			if !strings.Contains(err.Error(), c.wantKey) {
-				t.Errorf("错误信息 %q 未提到配置项 %q", err.Error(), c.wantKey)
+			if !strings.Contains(err.Error(), c.wantErrText) {
+				t.Errorf("错误信息 %q 未包含期望文本 %q", err.Error(), c.wantErrText)
 			}
 		})
 	}

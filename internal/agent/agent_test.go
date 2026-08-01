@@ -25,7 +25,7 @@ func TestAgentSummarize(t *testing.T) {
 	// 读本地真实配置：test 的工作目录是包目录 internal/agent，仓库根在 ../../。
 	cfg, err := config.FromFile("../../myconfig.toml")
 	if err != nil {
-		t.Skipf("未找到 myconfig.toml，跳过：%v", err)
+		t.Skipf("读取/校验 myconfig.toml 失败，跳过：%v", err)
 	}
 	if cfg.DeepSeek.APIToken == "" {
 		t.Skip("myconfig.toml 缺少 deepseek api_token，跳过")

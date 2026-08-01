@@ -46,7 +46,7 @@ func main() {
 	// 2) 加载 TOML 配置；失败直接打印 + 退出码 1
 	cfg, err := config.FromFile(cli.Config)
 	if err != nil {
-		slog.Error("failed to load config", "err", err)
+		slog.Error("failed to load config", "path", cli.Config, "err", err)
 		os.Exit(1)
 	}
 

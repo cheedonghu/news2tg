@@ -34,6 +34,8 @@ weather_mention = ["123456789:管理员"]
 
 [deepseek]
 api_token="key"
+# 即使关闭 HN / 天气等 AI 功能，model / agent_model 也必须填写——
+# main.go 里两个 DeepSeek 客户端是无条件构造的，不看 [features] 开关。
 # 摘要 / 穿衣建议用的模型（对应 ai.DeepSeek 的 Summarize、Advise）。
 # 换模型改这里重启即可，代码里没有默认值——留空会导致启动失败。
 model = "deepseek-v4-flash"
