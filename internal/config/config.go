@@ -72,9 +72,14 @@ type Telegram struct {
 	AdminIDs []string `toml:"admin_ids"`
 }
 
-// DeepSeek 段：AI 摘要服务的 key。
+// DeepSeek 段：AI 摘要服务的 key 和模型名。
+// 两个模型分开配是有意的：agent 走 function calling，必须用支持 tools 的模型；
+// Summarize/Advise 只是纯文本生成，用便宜的轻量模型就够。
+// 合成一个字段的话，换轻量模型时会顺手把 agent 的工具调用打挂。
 type DeepSeek struct {
-	APIToken string `toml:"api_token"`
+	APIToken   string `toml:"api_token"`
+	Model      string `toml:"model"`       // Summarize / Advise 用
+	AgentModel string `toml:"agent_model"` // agent 用，必须支持 function calling
 }
 
 // Jina 段：jina reader(r.jina.ai) 的 key，agent 回退提取渠道用。
@@ -100,6 +105,15 @@ func FromFile(path string) (*Config, error) {
 	// 第一个返回值是 MetaData（哪些 key 被识别等），这里用 _ 丢弃。
 	if _, err := toml.DecodeFile(path, &cfg); err != nil {
 		return nil, err
+	}
+	// 模型名故意不在 Go 代码里留兜底默认值：缺配置就启动失败，
+	// 这样「模型名写在哪」只有一个答案——配置文件。
+	// TrimSpace 是防御误填空格（TOML 里 model = "  " 也算填了）。
+	if strings.TrimSpace(cfg.DeepSeek.Model) == "" {
+		return nil, fmt.Errorf("[deepseek] model 未配置")
+	}
+	if strings.TrimSpace(cfg.DeepSeek.AgentModel) == "" {
+		return nil, fmt.Errorf("[deepseek] agent_model 未配置")
 	}
 	return &cfg, nil
 }

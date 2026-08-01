@@ -34,6 +34,12 @@ weather_mention = ["123456789:管理员"]
 
 [deepseek]
 api_token="key"
+# 摘要 / 穿衣建议用的模型（对应 ai.DeepSeek 的 Summarize、Advise）。
+# 换模型改这里重启即可，代码里没有默认值——留空会导致启动失败。
+model = "deepseek-v4-flash"
+# agent（/summary 指令）用的模型，必须支持 function calling（工具调用），
+# 否则 agent 无法在 python / jina 两个正文提取器之间做选择。同样留空即启动失败。
+agent_model = "deepseek-chat"
 
 # jina reader(r.jina.ai) 的 key，agent 回退提取渠道用；留空则走免认证公开端点
 [jina]
