@@ -26,14 +26,16 @@ nano ./config/config.toml
 docker compose up -d
 ~~~
 
+升级注意：`[deepseek]` 段新增必填项 `model` 与 `agent_model`，老配置不补会启动失败并报 `[deepseek] model 未配置`（`docker logs` 里能搜到）。docker-compose 挂载的是本地 `config.toml`，拉新镜像不会自动带上新字段，升级前请手动把这两项加进配置。
+
 ### 自己构建
 参考dockerfile文件
 
 本地构建（Go ≥ 1.22）：
 ~~~bash
 go mod tidy
-go build -o bin/news-notify ./cmd/news-notify
-./bin/news-notify -c config.toml
+go build -o bin/news2tg ./cmd/news2tg
+./bin/news2tg -c config.toml
 ~~~
 
 ## 技术栈

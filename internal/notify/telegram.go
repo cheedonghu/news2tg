@@ -10,7 +10,7 @@ import (
 	// 用法：`import 别名 "导入路径"`，可以解决包名冲突或缩短调用。
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"github.com/cheedonghu/news-notify/internal/tools"
+	"github.com/cheedonghu/news2tg/internal/tools"
 )
 
 // Telegram 是 Notifier 接口的一个实现。

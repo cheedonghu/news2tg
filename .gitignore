@@ -1,7 +1,7 @@
 # Binaries
 /bin/
-/news-notify
-/news-notify.exe
+/news2tg
+/news2tg.exe
 
 # Test / coverage
 *.test
@@ -26,3 +26,5 @@ Thumbs.db
 # Go workspace files
 go.work
 go.work.sum
+
+/target

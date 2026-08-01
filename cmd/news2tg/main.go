@@ -1,6 +1,6 @@
 // 这是程序入口。
 // Go 规则：可执行程序的入口包必须叫 `package main`，而且必须有一个 `func main()`。
-// 编译时 `go build ./cmd/news-notify` 会以"目录名"news-notify 作为二进制名。
+// 编译时 `go build ./cmd/news2tg` 会以"目录名"news2tg 作为二进制名。
 package main
 
 import (
@@ -16,14 +16,14 @@ import (
 	"syscall"   // SIGTERM 等系统信号常量
 	"time"
 
-	"github.com/cheedonghu/news-notify/internal/agent"
-	"github.com/cheedonghu/news-notify/internal/ai"
-	"github.com/cheedonghu/news-notify/internal/command"
-	"github.com/cheedonghu/news-notify/internal/config"
-	"github.com/cheedonghu/news-notify/internal/digest"
-	"github.com/cheedonghu/news-notify/internal/logx"
-	"github.com/cheedonghu/news-notify/internal/monitor"
-	"github.com/cheedonghu/news-notify/internal/notify"
+	"github.com/cheedonghu/news2tg/internal/agent"
+	"github.com/cheedonghu/news2tg/internal/ai"
+	"github.com/cheedonghu/news2tg/internal/command"
+	"github.com/cheedonghu/news2tg/internal/config"
+	"github.com/cheedonghu/news2tg/internal/digest"
+	"github.com/cheedonghu/news2tg/internal/logx"
+	"github.com/cheedonghu/news2tg/internal/monitor"
+	"github.com/cheedonghu/news2tg/internal/notify"
 )
 
 // 初始化slog：JSON handler 外面再包一层 logx.Handler，
@@ -46,7 +46,7 @@ func main() {
 	// 2) 加载 TOML 配置；失败直接打印 + 退出码 1
 	cfg, err := config.FromFile(cli.Config)
 	if err != nil {
-		slog.Error("failed to load config", "err", err)
+		slog.Error("failed to load config", "path", cli.Config, "err", err)
 		os.Exit(1)
 	}
 
@@ -67,7 +67,7 @@ func main() {
 
 	// 5) 拼一条启动通知
 	startupText := fmt.Sprintf(
-		"news-notify启动完成，监控任务开始投递内容。\n启动时间：[%s]\n项目地址：https://github.com/cheedonghu/news-notify",
+		"news2tg启动完成，监控任务开始投递内容。\n启动时间：[%s]\n项目地址：https://github.com/cheedonghu/news2tg",
 		time.Now().Format("2006-01-02 15:04"), // Go 的"魔法时间格式"，固定写这串数字
 	)
 	slog.Info(startupText)
@@ -105,14 +105,14 @@ func main() {
 	}
 
 	// 9) 构造各个组件
-	aiClient := ai.NewDeepSeek(cfg.DeepSeek.APIToken)
+	aiClient := ai.NewDeepSeek(cfg.DeepSeek.APIToken, cfg.DeepSeek.Model)
 	digestFetcher := digest.NewPython(httpClient) // 当前用 Python sidecar；后续可换 agent 渠道
 	hnMon := monitor.NewHackerNews(httpClient, tgClient, aiClient, digestFetcher)
 	v2exMon := monitor.NewV2EX(httpClient, tgClient)
 
 	// 9.1) 组装总结 agent：python（优先）+ jina（回退）两个提取器，复用 DeepSeek key。
 	jinaFetcher := digest.NewJina(httpClient, cfg.Jina.APIToken)
-	summaryAgent := agent.NewAgent(cfg.DeepSeek.APIToken, digestFetcher, jinaFetcher)
+	summaryAgent := agent.NewAgent(cfg.DeepSeek.APIToken, cfg.DeepSeek.AgentModel, digestFetcher, jinaFetcher)
 
 	// 9.2) 解析白名单 user id（字符串 → int64，坏值仅 log 跳过）。
 	adminIDs := make([]int64, 0, len(cfg.Telegram.AdminIDs))
@@ -124,6 +124,20 @@ func main() {
 		}
 		adminIDs = append(adminIDs, id)
 	}
+
+	// 9.2.1) 解析每日天气 @ 提及列表（"id" 或 "id:显示名"，与 admin_ids 独立）。
+	mentions := make([]config.Mention, 0, len(cfg.Features.WeatherMention))
+	for _, s := range cfg.Features.WeatherMention {
+		m, perr := config.ParseMention(s)
+		if perr != nil {
+			slog.Warn("跳过非法 weather_mention", "value", s, "err", perr)
+			continue
+		}
+		mentions = append(mentions, m)
+	}
+
+	// aiClient 已实现 Advise，天然满足 monitor.Advisor。
+	weatherMon := monitor.NewWeather(httpClient, tgClient, aiClient, mentions)
 
 	// 9.3) 命令 bot：收 /summary <网址>，调 agent 总结后推送到频道（tgClient）。
 	cmdBot, err := command.NewBot(cfg.Telegram.APIToken, summaryAgent, tgClient, adminIDs)
@@ -140,6 +154,7 @@ func main() {
 	}{
 		{"hackernews", hnMon},
 		{"v2ex", v2exMon},
+		{"weather", weatherMon}, // 新增：每日天气定点推送
 		{"command-bot", cmdBot},
 	}
 

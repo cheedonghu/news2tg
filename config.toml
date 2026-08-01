@@ -22,8 +22,26 @@ hn_fetch_num = 1
 # hacker news目标帖子距今时间（hacker news的top算法可能导致大量新帖冒出） 单位:H
 hn_fetch_time_gap = 1
 
+# —— 每日天气推送 ——
+# 总开关
+weather_enabled = false
+# 推送时间 HH:MM（空或非法回落 07:00）
+weather_push_time = "07:00"
+# 城市编码列表（101010100=北京 101280101=广州；编码可在 weather.com.cn 城市页 URL 里找）
+weather_cities = ["101010100"]
+# 每日天气要 @ 的人，"id" 或 "id:显示名"；与 admin_ids 无关
+weather_mention = ["123456789:管理员"]
+
 [deepseek]
 api_token="key"
+# 即使关闭 HN / 天气等 AI 功能，model / agent_model 也必须填写——
+# main.go 里两个 DeepSeek 客户端是无条件构造的，不看 [features] 开关。
+# 摘要 / 穿衣建议用的模型（对应 ai.DeepSeek 的 Summarize、Advise）。
+# 换模型改这里重启即可，代码里没有默认值——留空会导致启动失败。
+model = "deepseek-v4-flash"
+# agent（/summary 指令）用的模型，必须支持 function calling（工具调用），
+# 否则 agent 无法在 python / jina 两个正文提取器之间做选择。同样留空即启动失败。
+agent_model = "deepseek-chat"
 
 # jina reader(r.jina.ai) 的 key，agent 回退提取渠道用；留空则走免认证公开端点
 [jina]

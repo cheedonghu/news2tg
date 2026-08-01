@@ -16,13 +16,13 @@ import (
 	// 第三方包：HTML 解析（类似 jQuery 的 API）
 	"github.com/PuerkitoBio/goquery"
 
-	"github.com/cheedonghu/news-notify/internal/ai"
-	"github.com/cheedonghu/news-notify/internal/config"
-	"github.com/cheedonghu/news-notify/internal/digest"
-	"github.com/cheedonghu/news-notify/internal/logx"
-	"github.com/cheedonghu/news-notify/internal/model"
-	"github.com/cheedonghu/news-notify/internal/notify"
-	"github.com/cheedonghu/news-notify/internal/tools"
+	"github.com/cheedonghu/news2tg/internal/ai"
+	"github.com/cheedonghu/news2tg/internal/config"
+	"github.com/cheedonghu/news2tg/internal/digest"
+	"github.com/cheedonghu/news2tg/internal/logx"
+	"github.com/cheedonghu/news2tg/internal/model"
+	"github.com/cheedonghu/news2tg/internal/notify"
+	"github.com/cheedonghu/news2tg/internal/tools"
 )
 
 // Hacker News 相关端点说明：

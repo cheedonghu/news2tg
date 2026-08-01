@@ -9,8 +9,8 @@ import (
 	"testing" // Go 官方测试框架，提供 *testing.T、t.Run、t.Fatalf 等
 	"time"
 
-	"github.com/cheedonghu/news-notify/internal/config"
-	"github.com/cheedonghu/news-notify/internal/model"
+	"github.com/cheedonghu/news2tg/internal/config"
+	"github.com/cheedonghu/news2tg/internal/model"
 )
 
 // 测试函数命名规范：必须以 Test 开头 + 大写字母，参数必须是 *testing.T。

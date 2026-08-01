@@ -11,7 +11,7 @@ import (
 
 	// 第三方包：导入路径就是 go.mod 里 module 名 + 子目录路径。
 	// 空行用来把"标准库"和"本项目/第三方"分组，gofmt 不会动这种分组。
-	"github.com/cheedonghu/news-notify/internal/config"
+	"github.com/cheedonghu/news2tg/internal/config"
 )
 
 // Monitor 是一个"接口"（interface）。Go 的接口是隐式实现的：

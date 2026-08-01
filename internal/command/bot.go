@@ -13,9 +13,9 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
-	"github.com/cheedonghu/news-notify/internal/config"
-	"github.com/cheedonghu/news-notify/internal/logx"
-	"github.com/cheedonghu/news-notify/internal/notify"
+	"github.com/cheedonghu/news2tg/internal/config"
+	"github.com/cheedonghu/news2tg/internal/logx"
+	"github.com/cheedonghu/news2tg/internal/notify"
 )
 
 // commandSummary 是本 bot 唯一认的命令名（对应 "/summary"）。
@@ -58,6 +58,17 @@ func (b *Bot) Run(ctx context.Context, _ *config.Config) error {
 	u.Timeout = 30 // long-poll：每次最多挂 30s 等新消息，省请求
 	updates := b.bot.GetUpdatesChan(u)
 	defer b.bot.StopReceivingUpdates() // 退出时让 SDK 的收取 goroutine 停下来
+
+	// 向 Telegram 注册命令清单：客户端键入 "/" 的自动补全弹窗就来自这份清单。
+	// 只 long-poll 收命令不会注册，必须显式调 setMyCommands。
+	cmdCfg := tgbotapi.NewSetMyCommands(tgbotapi.BotCommand{
+		Command:     commandSummary, // 复用常量，命令名与 classify 判定保持单一来源
+		Description: "总结网址并推送到频道",   // 3-256 字符，展示在候选项里
+	})
+	// 注册失败不影响收指令（命令仍可手动键入执行），遵循本仓库"失败不中断"约定：仅告警。
+	if _, err := b.bot.Request(cmdCfg); err != nil {
+		slog.Warn("注册 Telegram 命令清单失败（不影响 /summary 执行）", "err", err)
+	}
 
 	slog.Info("command bot 已启动，监听 /summary 指令")
 	for {

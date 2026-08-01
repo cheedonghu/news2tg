@@ -15,6 +15,9 @@ import (
 // 把 BaseURL 换成 DeepSeek 的地址即可。
 type DeepSeek struct {
 	client *openai.Client // SDK 客户端，内部维护 HTTP client
+	// 模型名，由 main 从 [deepseek] model 传入。
+	// 不写死是为了换模型只改配置重启，不用重新编译。
+	model string
 	// 上下文窗口大小
 	contextLength int
 	// AI总结后给用户阅读的最大长度
@@ -22,10 +25,11 @@ type DeepSeek struct {
 }
 
 // NewDeepSeek 构造函数。注意没有返回 error：这里只是配置，没真发请求。
-func NewDeepSeek(apiKey string) *DeepSeek {
+// model 由调用方（main）从配置传入，非空性已在 config.FromFile 里校验过。
+func NewDeepSeek(apiKey, model string) *DeepSeek {
 	cfg := openai.DefaultConfig(apiKey)         // 默认配置（OpenAI 官方地址）
 	cfg.BaseURL = "https://api.deepseek.com/v1" // 改成 DeepSeek 的地址
-	return &DeepSeek{client: openai.NewClientWithConfig(cfg), contextLength: 60000, readerLength: 2000}
+	return &DeepSeek{client: openai.NewClientWithConfig(cfg), model: model, contextLength: 60000, readerLength: 2000}
 }
 
 // Summarize 实现 Helper 接口；签名一致就自动算"实现了"。
@@ -51,7 +55,7 @@ func (d *DeepSeek) Summarize(ctx context.Context, content string) (string, error
 	// 调 SDK：CreateChatCompletion 是 OpenAI Chat Completions 的标准调用。
 	// 入参是结构体字面量，复杂请求一目了然。
 	resp, err := d.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model: "deepseek-v4-flash",
+		Model: d.model,
 		Messages: []openai.ChatCompletionMessage{
 			// 单条 user 消息；多轮对话会塞多个进去（system / user / assistant 轮流）。
 			{Role: openai.ChatMessageRoleUser, Content: prompt},
@@ -67,5 +71,36 @@ func (d *DeepSeek) Summarize(ctx context.Context, content string) (string, error
 		return "大模型返回非String内容", nil
 	}
 	// 取第一个候选的回复文本。
+	return resp.Choices[0].Message.Content, nil
+}
+
+// Advise 根据多城市天气文本，用 DeepSeek 生成中文穿衣建议。
+//
+// 与 Summarize 一样是"失败兜底不抛错"：任何异常都返回固定文案 + nil，
+// 让天气推送照常发出去（AI 只是锦上添花，不能阻断主流程）。
+// 一次调用处理所有城市：把各城市天气拼进 prompt，让模型按城市各给一句。
+func (d *DeepSeek) Advise(ctx context.Context, weatherText string) (string, error) {
+	slog.InfoContext(ctx, "利用大模型生成穿衣建议")
+
+	// prompt 约束输出格式：每城市一行「城市：建议」，避免模型发挥太长。
+	prompt := fmt.Sprintf(
+		"下面是今天几个城市的天气，请用中文为每个城市各写一句简短的穿衣建议，"+
+			"每个城市一行，格式「城市：建议」，不要多余解释：\n%s",
+		weatherText,
+	)
+
+	resp, err := d.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+		Model: d.model, // 与 Summarize 同一个配置项
+		Messages: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleUser, Content: prompt},
+		},
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "穿衣建议大模型返回异常", "err", err)
+		return "穿衣建议获取失败", nil // 兜底，不抛错
+	}
+	if len(resp.Choices) == 0 {
+		return "穿衣建议获取失败", nil
+	}
 	return resp.Choices[0].Message.Content, nil
 }
