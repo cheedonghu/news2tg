@@ -22,12 +22,19 @@ import (
 // dlURL 小写 = 包外不可见。这是刻意的：那个直链带一长串 token（200+ 字符），
 // 既不该出包，更不该进模型上下文 —— 20 条候选就是 4000+ 字符白烧 token，
 // 而且模型很容易把它改坏。模型只看得到 ID，Go 侧凭 ID 查表拿真直链。
+// dlCookie 与 dlURL 是同一套思路：包外不可见，只有产出它的那个音源看得懂，
+// 也绝不进模型上下文。musicso.cc 的直链解析接口要求带上搜索那一跳下发的
+// PHPSESSID，把它挂在候选上（而不是让音源自己存一份共享状态）有个具体好处：
+// 两个并发的 /music 任务不会互相把对方的会话冲掉 —— 否则 A 搜完、B 重新
+// 预热、A 再下载时会话已被换掉，站点直接 403，而报出来是"下载失败"这种
+// 完全指不到病根的错误。mp3.pm 不需要会话，这个字段对它恒为空。
 type Candidate struct {
 	ID       string // 源内唯一 id（mp3.pm 用 data-sound-id）
 	Artist   string // 站点原始歌手名，可能是罗马化的（"Jay Chou"）
 	Title    string // 站点原始歌名，可能是罗马化的（"Kai Bu Liao Kou."）
 	Duration string // "04:44"
 	dlURL    string // 下载直链
+	dlCookie string // 下载所需的会话凭据（如 PHPSESSID 的值）；空表示该音源不需要
 }
 
 // Source 是"一个音源"的统一形状，也是本包唯一的扩展点。
