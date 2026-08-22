@@ -62,7 +62,44 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 4) 初始化 Telegram 客户端（内部会真正去连一次 bot API 验证 token）
+	// 3.5) 全局代理：非空时对**所有** HTTP 出站生效。必须排在本函数里
+	// 第一次构造任何 HTTP 客户端（下面第 4 步的 tgClient）**之前**。
+	//
+	// 为什么不能放到更后面、等共享 client 那一步再一起设（本来是这么写的，
+	// 评审时被指出是 bug）：tgbotapi.NewBotAPIWithClient 在构造期间就会
+	// 同步发一次 GetMe() 校验 token —— 也就是说"构造即请求"，不存在
+	// "等第一次业务调用再触发"的余地。等 tgClient 构造完再设代理，等于让
+	// 这次真实请求在代理设置生效之前就已经打出去了；如果代理是访问
+	// Telegram 的唯一出路，GetMe() 会直连失败，下面第 4 步直接
+	// os.Exit(1) —— 配了个完全合法的代理，进程反而起不来。
+	//
+	// 为什么只需要动这两处（这里 + 下面 8.1 的共享 client）、不必改任何
+	// 构造函数签名：仓库里一共六个 HTTP 客户端构造点，其中五个
+	// （notify.Telegram 的 &http.Client{Timeout: 30s}、tgbotapi.NewBotAPI
+	// 内部的 &http.Client{}、go-openai DefaultConfig 的 &http.Client{} ×3）
+	// Transport 字段都是 nil，net/http 会自动回落到 http.DefaultTransport ——
+	// 覆盖它就等于同时改到那五个。剩下的第六个是 8.1 的共享 client，它自带
+	// 显式 Transport，不吃 DefaultTransport，所以要单独把 Proxy 设一遍，
+	// proxyFunc 在这里算好、留到 8.1 复用，不重复解析一遍配置。
+	//
+	// 注意：这一行改的是 http.DefaultTransport 这个包级全局可变变量，
+	// 没有加锁保护；它的安全性完全依赖"跑在所有 goroutine 启动之前"这个
+	// 时序保证——本函数此时还没有 go 出任何一个 monitor/bot goroutine，
+	// 之后也不应该再有代码回来改它。谁要往前挪这段初始化顺序，得先确认
+	// 这个前提仍然成立。
+	var proxyFunc func(*http.Request) (*url.URL, error) // nil = 不走代理
+	if p := strings.TrimSpace(cfg.Network.Proxy); p != "" {
+		// 这里可以忽略 error：FromFile 已经校验过一遍，走到这儿必定合法。
+		u, _ := url.Parse(p)
+		proxyFunc = http.ProxyURL(u)
+		// 类型断言：DefaultTransport 的静态类型是 http.RoundTripper 接口，
+		// 要拿到 Proxy 字段得先断言回具体的 *http.Transport。
+		http.DefaultTransport.(*http.Transport).Proxy = proxyFunc
+		slog.Info("全局 HTTP 代理已启用", "proxy", p)
+	}
+
+	// 4) 初始化 Telegram 客户端（内部会真正去连一次 bot API 验证 token，
+	// 这也是上面那段代理设置必须排在它之前的原因）
 	tgClient, err := notify.NewTelegram(cfg.Telegram.APIToken, chatID)
 	if err != nil {
 		slog.Error("failed to init telegram", "err", err)
@@ -102,31 +139,9 @@ func main() {
 	defer pushStore.Close()
 	slog.Info("push record store opened", "path", cfg.Storage.DBPath)
 
-	// 8) 全局代理：非空时对**所有** HTTP 出站生效。
-	//
-	// 为什么只需要动这两处、不必改任何构造函数签名：
-	// 仓库里一共六个 HTTP 客户端构造点，其中五个（notify.Telegram 的
-	// &http.Client{Timeout: 30s}、tgbotapi.NewBotAPI 内部的 &http.Client{}、
-	// go-openai DefaultConfig 的 &http.Client{} ×3）Transport 字段都是 nil，
-	// net/http 会自动回落到 http.DefaultTransport —— 覆盖它就等于同时改到那五个。
-	// 剩下的第六个就是下面这个共享 client，它自带显式 Transport，
-	// 不吃 DefaultTransport，所以要单独把 Proxy 设一遍。
-	//
-	// 注意这段必须跑在任何客户端被构造**之前**。tgClient 在第 4 步就建好了，
-	// 但 tgbotapi 只是把 *http.Client 存下来、每次请求才现取 Transport，
-	// 所以在这里改仍然对它生效。
-	var proxyFunc func(*http.Request) (*url.URL, error) // nil = 不走代理
-	if p := strings.TrimSpace(cfg.Network.Proxy); p != "" {
-		// 这里可以忽略 error：FromFile 已经校验过一遍，走到这儿必定合法。
-		u, _ := url.Parse(p)
-		proxyFunc = http.ProxyURL(u)
-		// 类型断言：DefaultTransport 的静态类型是 http.RoundTripper 接口，
-		// 要拿到 Proxy 字段得先断言回具体的 *http.Transport。
-		http.DefaultTransport.(*http.Transport).Proxy = proxyFunc
-		slog.Info("全局 HTTP 代理已启用", "proxy", p)
-	}
-
 	// 8.1) 共享 HTTP 客户端：连接池、超时配置全集中在这里。
+	// proxyFunc 在 3.5 步就算好了（必须早于 tgClient 构造，见那里的注释），
+	// 这里直接复用，不重复解析一遍配置。
 	// &http.Client{...} 取地址：拿到 *http.Client 指针，方便共享同一个连接池。
 	httpClient := &http.Client{
 		//Timeout: 5 * time.Minute, // 整个请求总超时
