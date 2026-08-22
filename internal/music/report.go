@@ -19,13 +19,23 @@ import (
 // "看起来仍然实时"和"别太吵"之间的折中；觉得挤就把这个常量调大。
 const throttleInterval = 3 * time.Second
 
-// terminalSendTimeout 是终态那一帧自己的发送预算。
+// terminalSendTimeout 是终态那一帧**自己这次传输**的预算。
 //
 // Done 会用 context.WithoutCancel 摘掉调用方的取消信号（见 Done 的注释），
 // 但不能就此变成一次没有任何时限的发送，所以另配一个自己的超时。
-// 10s 的取法：sendRaw 里最坏要等 1.5s 的全局限速，等待期间是可被 ctx 打断的，
-// 10s 足够覆盖它并留出余量；真进了 bot.Send 之后 ctx 就管不着了，
-// 那一段由 notify 客户端自己的 30s HTTP 超时兜底。
+//
+// ⚠️ 这个预算是在 send() 里**拿到 sendMu 之后**才开始计时的，不是在 Done 入口
+// 就开始烧。这个区别很要命，别"顺手"把它挪回 Done 里去：
+//
+// sendMu 可能正被另一次 Update/flush 的传输持有，而那次传输的时长上界**不是
+// 1.5s** —— 是「最多 1.5s 全局限速等待 + notify 客户端自己的 30s HTTP 超时」，
+// 也就是接近 31.5s（bot.Send 不收 ctx，进去之后只有那个 HTTP 超时管得住它）。
+// 若预算从 Done 入口起算，光是排队等锁就足够把它耗光；轮到自己时 ctx 已经死了，
+// sendRaw 首句的 ctx.Err() 直接返回，而 terminalSent 照样被置真 ——
+// 消息永久冻结在中间态，正是 I3 存在的意义所在。所以计时必须从"轮到我了"算起。
+//
+// 10s 对**自己这一次**传输是足够宽裕的：真正能被 ctx 打断的只有最多 1.5s 的
+// 限速等待，进了 bot.Send 之后由客户端的 30s HTTP 超时兜底。
 const terminalSendTimeout = 10 * time.Second
 
 // Stage 是任务所处的阶段。
@@ -117,6 +127,10 @@ type tgReporter struct {
 	editor   notify.Editor
 	chatID   int64
 	throttle time.Duration
+	// terminalTimeout 是终态那一帧自己的发送预算（见 terminalSendTimeout）。
+	// 抽成字段而非直接用常量，理由同 Uploader.timeout / Agent.maxBytes：
+	// 测试要把它压到毫秒级，否则验证"预算不该在等锁期间烧掉"就得真等 10s。
+	terminalTimeout time.Duration
 
 	// mu 保护下面这组状态。time.AfterFunc 的回调在另一个 goroutine 里跑，
 	// 上传阶段也有多个 goroutine 并发灌快照，所以必须加锁。
@@ -162,7 +176,12 @@ func NewTelegramReporter(e notify.Editor, chatID int64) Reporter {
 // newTGReporter 是带节流参数的内部构造函数，让测试能把节流调到毫秒级。
 // 导出的 NewTelegramReporter 固定用 throttleInterval。
 func newTGReporter(e notify.Editor, chatID int64, throttle time.Duration) *tgReporter {
-	return &tgReporter{editor: e, chatID: chatID, throttle: throttle}
+	return &tgReporter{
+		editor:          e,
+		chatID:          chatID,
+		throttle:        throttle,
+		terminalTimeout: terminalSendTimeout,
+	}
 }
 
 // Update 报告中间快照，受节流约束。
@@ -224,15 +243,20 @@ func (r *tgReporter) Done(ctx context.Context, s Status) {
 	//
 	// 设计里唯一不能让步的一条就是 "Done 无条件立即发出……最后一条必须准确"，
 	// 所以这里用 context.WithoutCancel 摘掉取消信号（**值照留**，logx 的
-	// task_id 因此不会丢），再套一个自己的短超时，免得反过来变成一次
-	// 不受任何约束的发送。
+	// task_id 因此不会丢）。
+	//
+	// 这里**只**摘取消信号，不在这里套超时：那个超时必须等拿到 sendMu 之后
+	// 才开始计时，否则排队等锁的时间会把预算烧光（详见 terminalSendTimeout
+	// 的注释）。所以它被放在 send() 里。
 	//
 	// 为什么修在这里而不是 Runner 的四个调用点：这条保证是 Reporter 接口
 	// 契约的一部分（"Done 必须立即发出"），属于实现方的责任。放在调用点
 	// 等于把同一段防御抄四遍，将来多一条 Done 路径就会漏掉一次；而且别的
 	// Reporter 实现也拿不到这份保证。
-	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalSendTimeout)
-	defer cancel()
+	//
+	// 注意 WithoutCancel 之后没有 deadline 也不会让 Done 永久卡住：它顶多在
+	// sendMu 上排队，而每个持锁者的传输都被 notify 客户端的 30s HTTP 超时封顶。
+	dctx := context.WithoutCancel(ctx)
 
 	// finished 只挡未来的 Update（见 Update 顶部的早退检查），挡不住已经
 	// 在飞的并发调用（它们的早退检查在 finished=true 之前就已经通过了）。
@@ -280,6 +304,17 @@ func (r *tgReporter) flush() {
 func (r *tgReporter) send(ctx context.Context, s Status, terminal bool) {
 	r.sendMu.Lock()
 	defer r.sendMu.Unlock()
+
+	// 终态的发送预算从**这里**开始计时，而不是从 Done 入口 —— 上面那把
+	// sendMu 可能刚被另一次传输占了几十秒（见 terminalSendTimeout 的注释），
+	// 预算若在排队期间就烧完，终态会在真正轮到它时被 sendRaw 首句直接丢弃，
+	// 而 terminalSent 还是会被置真，消息永久停在中间态。
+	// 中间态的 send 不套预算：它本来就是可丢弃的，由调用方的 ctx 管着即可。
+	if terminal {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.terminalTimeout)
+		defer cancel()
+	}
 
 	r.mu.Lock()
 	if r.terminalSent && !terminal {

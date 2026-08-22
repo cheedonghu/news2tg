@@ -254,6 +254,97 @@ func TestReporterDoneSurvivesCancelledCtx(t *testing.T) {
 	})
 }
 
+// slowEditor 的**第一次**调用会阻塞 block 时长，之后的调用立即返回。
+// 用来模拟"另一次传输正卡在 Telegram 的网络 IO 上、把 sendMu 攥着不放"。
+// 同 fakeEditor，两个方法都先查 ctx —— 照抄 notify.Telegram.sendRaw 的行为。
+type slowEditor struct {
+	mu    sync.Mutex
+	block time.Duration
+	calls int
+	edits []string
+	sends []string
+}
+
+// wait 决定这次调用要不要阻塞：只有第一次阻塞。
+// 阻塞发生在锁外，否则会把并发调用挡在 slowEditor 自己的 mu 上，
+// 测的就不是 sendMu 了。
+func (s *slowEditor) wait() {
+	s.mu.Lock()
+	s.calls++
+	first := s.calls == 1
+	s.mu.Unlock()
+	if first {
+		time.Sleep(s.block)
+	}
+}
+
+func (s *slowEditor) SendEditable(ctx context.Context, _ int64, md string) (int, error) {
+	s.wait()
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sends = append(s.sends, md)
+	return 42, nil
+}
+
+func (s *slowEditor) Edit(ctx context.Context, _ int64, _ int, md string) error {
+	s.wait()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.edits = append(s.edits, md)
+	return nil
+}
+
+// TestReporterDoneBudgetStartsAfterLockAcquired 是补给"修复波自身引入的回归"的用例。
+//
+// 缺陷（I3 修复的副作用）：Done 在**入口**就用 WithTimeout 起了终态预算，可
+// send() 随后还要在 sendMu 上排队。持锁的那次传输不是 1.5s 封顶 —— 它的上界是
+// 「最多 1.5s 全局限速 + notify 客户端的 30s HTTP 超时」，接近 31.5s。
+// 排队一旦超过预算，轮到终态时 dctx 已经过期，sendRaw 首句直接返回，
+// 而 terminalSent 照样置真 —— 消息永久冻结在中间态，正是 I3 要防的症状。
+// 注意这条在修复前是**能正常发出**的（活着的 ctx 上没有 deadline），
+// 所以它是修复引入的回归，而不是原有缺口。
+//
+// 时序：Update 先抢到 sendMu 并卡在 200ms 的 IO 里；Done 随后进来，
+// 在锁上排队约 200ms —— 远超压到 50ms 的终态预算。
+// 修复后预算从"拿到锁"才起算，终态照常发出。
+func TestReporterDoneBudgetStartsAfterLockAcquired(t *testing.T) {
+	se := &slowEditor{block: 200 * time.Millisecond}
+	r := newTGReporter(se, 1, 0)
+	// 压到 50ms：远小于上面 200ms 的排队时间。用真实的 10s 就得真等 10s 才测得出来。
+	r.terminalTimeout = 50 * time.Millisecond
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// 首帧：拿到 sendMu 后卡在 SendEditable 里 200ms。
+		r.Update(ctx, Status{Query: "晴天", Searches: 1})
+	}()
+
+	// 给上面那个 goroutine 一点时间真正抢到 sendMu 并进入 IO。
+	time.Sleep(40 * time.Millisecond)
+
+	// 终态：会在 sendMu 上排队约 160ms，远超 50ms 的预算。
+	r.Done(ctx, Status{Query: terminalMarker, Stage: StageDone})
+	wg.Wait()
+
+	se.mu.Lock()
+	defer se.mu.Unlock()
+	if len(se.edits) != 1 {
+		t.Fatalf("终态在 sendMu 上排队期间把预算烧光了，没能发出：Edit %d 次, want 1", len(se.edits))
+	}
+	if !strings.Contains(se.edits[0], terminalMarker) {
+		t.Errorf("发出的不是终态内容: %s", se.edits[0])
+	}
+}
+
 // TestReporterFlushUsesLatestCtx 是补给 Minor A 的回归测试。
 //
 // 缺陷：time.AfterFunc 的闭包捕获的是**第一个开窗的那次 Update** 的 ctx。
