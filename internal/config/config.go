@@ -4,6 +4,7 @@ package config
 import (
 	"flag"     // Go 标准库的命令行参数解析（轻量，不像 Cobra 那么重）
 	"fmt"      // 新增：错误包装
+	"net/url"  // 新增：校验 [network] proxy 地址
 	"strconv"  // 新增：字符串转 int64
 	"strings"  // 新增：按冒号分割 / TrimSpace
 
@@ -92,6 +93,17 @@ type Jina struct {
 // 和模型名一样不留 Go 侧默认值 —— "库放哪"只有配置文件一个答案，缺了就启动失败。
 type Storage struct {
 	DBPath string `toml:"db_path"`
+}
+
+// Network 段：进程级的 HTTP 代理开关。
+//
+// 为什么是"要么全走要么全不走"而不是按主机分流？
+// 分流规则属于代理程序（clash / v2ray 之类）的职责，它们做得比我们好得多；
+// 在这里再实现一套 no_proxy 只会多一处需要同步维护的规则表。
+//
+// 这一段是可选的：不配即全部直连，行为与引入本字段之前完全一致。
+type Network struct {
+	Proxy string `toml:"proxy"` // 形如 http://127.0.0.1:7890 或 socks5://…；空 = 直连
 }
 
 // Music 段：/music 指令的 WebDAV 上传目标与凭据。
@@ -208,6 +220,7 @@ type Config struct {
 	Jina     Jina     `toml:"jina"`
 	Storage  Storage  `toml:"storage"` // 新增
 	Music    Music    `toml:"music"`   // 新增；可选功能，全空即关闭
+	Network  Network  `toml:"network"` // 新增；可选，空即全部直连
 }
 
 // FromFile 读取并解析配置文件。
@@ -230,6 +243,18 @@ func FromFile(path string) (*Config, error) {
 	}
 	if strings.TrimSpace(cfg.Storage.DBPath) == "" {
 		return nil, fmt.Errorf("[storage] db_path 未配置（本次升级新增的必填项，参考 config.toml 模板）")
+	}
+	// [network] proxy 在这里就地校验：非法地址应当在启动时暴露，
+	// 而不是等到运行时第一个 HTTP 请求失败——那时错误离病根已经很远。
+	// 空串是合法的（表示全部直连），所以先判空再解析。
+	if p := strings.TrimSpace(cfg.Network.Proxy); p != "" {
+		u, perr := url.Parse(p)
+		// url.Parse 对很多畸形串是宽容的（不报错但字段为空），所以必须
+		// 额外检查 Scheme 和 Host —— "127.0.0.1:7890" 会被解析成
+		// Scheme="127.0.0.1"、Opaque="7890"，Host 为空，拿去当代理必挂。
+		if perr != nil || u.Scheme == "" || u.Host == "" {
+			return nil, fmt.Errorf("[network] proxy 不是合法的代理地址（需形如 http://host:port 或 socks5://host:port）: %q", cfg.Network.Proxy)
+		}
 	}
 	// [music] 是可选功能：全空则 /music 不可用，但不阻止启动；
 	// 填一半则报错 —— 半配置状态一定是打字漏了。

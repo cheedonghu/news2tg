@@ -245,3 +245,59 @@ webdav_url_2  = "http://alist:5244/dav/onedrive/Music"
 		})
 	}
 }
+
+// TestFromFileNetworkProxy 验证 [network] proxy 能被解析出来。
+func TestFromFileNetworkProxy(t *testing.T) {
+	cfg, err := FromFile(writeTempTOML(t, musicTOML(`
+[network]
+proxy = "http://127.0.0.1:7890"
+`)))
+	if err != nil {
+		t.Fatalf("FromFile 意外报错: %v", err)
+	}
+	if cfg.Network.Proxy != "http://127.0.0.1:7890" {
+		t.Errorf("Network.Proxy = %q, want %q", cfg.Network.Proxy, "http://127.0.0.1:7890")
+	}
+}
+
+// TestFromFileNetworkProxyAbsent 验证：不配 [network] 时不报错，Proxy 为空串（= 全部直连）。
+// 现有部署没有这一段，不能因为升级就起不来。
+func TestFromFileNetworkProxyAbsent(t *testing.T) {
+	cfg, err := FromFile(writeTempTOML(t, musicTOML("")))
+	if err != nil {
+		t.Fatalf("FromFile 意外报错: %v", err)
+	}
+	if cfg.Network.Proxy != "" {
+		t.Errorf("未配置 [network] 时 Proxy 应为空串，实际 %q", cfg.Network.Proxy)
+	}
+}
+
+// TestFromFileNetworkProxyInvalid 验证：非法代理地址在启动时就报错。
+// 别等到运行时第一个 HTTP 请求才炸 —— 那时错误信息离病根已经很远了。
+func TestFromFileNetworkProxyInvalid(t *testing.T) {
+	cases := []struct {
+		name  string
+		proxy string
+	}{
+		// 前两个走 url.Parse 报错这条分支，第三个走"解析成功但 Host 为空"那条 ——
+		// 后者正是必须额外检查 Scheme/Host 的理由：url.Parse 对它是不报错的。
+		{"漏写 scheme（最常见的手误）", "127.0.0.1:7890"}, // err: first path segment cannot contain colon
+		{"只有分隔符没有 scheme", "://nohost"},        // err: missing protocol scheme
+		{"有 scheme 但没有主机", "http://"},           // 无 err，Scheme="http" 而 Host=""
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			_, err := FromFile(writeTempTOML(t, musicTOML(`
+[network]
+proxy = "`+c.proxy+`"
+`)))
+			if err == nil {
+				t.Fatalf("proxy = %q 应该导致启动失败", c.proxy)
+			}
+			if !strings.Contains(err.Error(), "proxy") {
+				t.Errorf("错误信息应提到 proxy，实际: %v", err)
+			}
+		})
+	}
+}

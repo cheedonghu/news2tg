@@ -67,3 +67,11 @@ webdav_name_1 = ""
 webdav_url_1  = ""
 webdav_name_2 = ""
 webdav_url_2  = ""
+
+# 全局 HTTP 代理。留空 = 全部直连（默认，与不写这一段等价）。
+# 非空时对所有出站请求生效：Telegram、DeepSeek、V2EX、HN、音源、WebDAV 一视同仁。
+# 按主机分流请在代理程序（clash / v2ray 等）的规则里做，这里不提供 no_proxy。
+# 注意：HN 摘要走的是 http://127.0.0.1:50051 的 Python sidecar，
+# 若你的代理程序会把 127.0.0.1 也代理出去，请在它的规则里给本机地址留直连。
+[network]
+proxy = ""

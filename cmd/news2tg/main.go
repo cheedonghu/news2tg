@@ -9,9 +9,11 @@ import (
 	"log/slog" // Go 1.21+ 官方结构化日志
 	"net"
 	"net/http"  // HTTP 客户端
+	"net/url"   // 全局代理地址解析
 	"os"        // 进程相关：os.Stderr / os.Exit / os.Interrupt
 	"os/signal" // 监听系统信号（Ctrl-C 等）
 	"strconv"   // 字符串 ↔ 数字
+	"strings"   // 全局代理地址 TrimSpace
 	"sync"      // sync.WaitGroup 等待多个 goroutine
 	"syscall"   // SIGTERM 等系统信号常量
 	"time"
@@ -100,11 +102,37 @@ func main() {
 	defer pushStore.Close()
 	slog.Info("push record store opened", "path", cfg.Storage.DBPath)
 
-	// 8) 共享 HTTP 客户端：连接池、超时配置全集中在这里。
+	// 8) 全局代理：非空时对**所有** HTTP 出站生效。
+	//
+	// 为什么只需要动这两处、不必改任何构造函数签名：
+	// 仓库里一共六个 HTTP 客户端构造点，其中五个（notify.Telegram 的
+	// &http.Client{Timeout: 30s}、tgbotapi.NewBotAPI 内部的 &http.Client{}、
+	// go-openai DefaultConfig 的 &http.Client{} ×3）Transport 字段都是 nil，
+	// net/http 会自动回落到 http.DefaultTransport —— 覆盖它就等于同时改到那五个。
+	// 剩下的第六个就是下面这个共享 client，它自带显式 Transport，
+	// 不吃 DefaultTransport，所以要单独把 Proxy 设一遍。
+	//
+	// 注意这段必须跑在任何客户端被构造**之前**。tgClient 在第 4 步就建好了，
+	// 但 tgbotapi 只是把 *http.Client 存下来、每次请求才现取 Transport，
+	// 所以在这里改仍然对它生效。
+	var proxyFunc func(*http.Request) (*url.URL, error) // nil = 不走代理
+	if p := strings.TrimSpace(cfg.Network.Proxy); p != "" {
+		// 这里可以忽略 error：FromFile 已经校验过一遍，走到这儿必定合法。
+		u, _ := url.Parse(p)
+		proxyFunc = http.ProxyURL(u)
+		// 类型断言：DefaultTransport 的静态类型是 http.RoundTripper 接口，
+		// 要拿到 Proxy 字段得先断言回具体的 *http.Transport。
+		http.DefaultTransport.(*http.Transport).Proxy = proxyFunc
+		slog.Info("全局 HTTP 代理已启用", "proxy", p)
+	}
+
+	// 8.1) 共享 HTTP 客户端：连接池、超时配置全集中在这里。
 	// &http.Client{...} 取地址：拿到 *http.Client 指针，方便共享同一个连接池。
 	httpClient := &http.Client{
 		//Timeout: 5 * time.Minute, // 整个请求总超时
 		Transport: &http.Transport{
+			Proxy: proxyFunc, // nil 时等价于不走代理
+
 			MaxIdleConns:        50,
 			MaxIdleConnsPerHost: 5, // 仍然要配，复用连接省握手
 			IdleConnTimeout:     150 * time.Second,
