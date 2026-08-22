@@ -61,6 +61,7 @@ func finalResp(content string) openai.ChatCompletionResponse {
 // fakeSource 是可编程的假音源。
 type fakeSource struct {
 	name      string
+	hint      string                 // 空则回落到默认文案；提示词测试要靠它区分不同音源
 	results   map[string][]Candidate // 关键词 → 候选；未命中的关键词返回零结果
 	searchErr error
 	payload   string // Download 写出的内容
@@ -69,7 +70,15 @@ type fakeSource struct {
 }
 
 func (s *fakeSource) Name() string { return s.name }
-func (s *fakeSource) Hint() string { return "测试音源" }
+
+// Hint 默认返回一句占位文案，这样现有那十几个用例一个字都不用改；
+// 只有关心"各源 Hint 是否分别进了提示词"的用例才需要显式设置 hint。
+func (s *fakeSource) Hint() string {
+	if s.hint != "" {
+		return s.hint
+	}
+	return "测试音源"
+}
 
 func (s *fakeSource) Search(_ context.Context, query string) ([]Candidate, error) {
 	if s.searchErr != nil {
@@ -645,5 +654,60 @@ func TestBuildToolDefs(t *testing.T) {
 		if !names[want] {
 			t.Errorf("缺少工具 %q，实际有: %v", want, names)
 		}
+	}
+}
+
+// TestBuildSystemPromptOrdersSources 验证：系统提示词按传入顺序列出音源，
+// 并明确要求模型按这个顺序依次尝试。
+//
+// 优先级就是靠这个落地的 —— Go 里没有任何硬编码的音源排序，
+// 顺序完全来自 cfg.Music.sources。所以这条断言守的是整个优先级机制。
+func TestBuildSystemPromptOrdersSources(t *testing.T) {
+	p := buildSystemPrompt([]Source{
+		&fakeSource{name: "musicso", hint: "中文站提示"},
+		&fakeSource{name: "mp3pm", hint: "俄语站提示"},
+	})
+
+	iMusicSo := strings.Index(p, "musicso")
+	iMp3PM := strings.Index(p, "mp3pm")
+	if iMusicSo < 0 || iMp3PM < 0 {
+		t.Fatalf("提示词里应当列出两个音源:\n%s", p)
+	}
+	if iMusicSo > iMp3PM {
+		t.Errorf("音源顺序被打乱：musicso 应当排在 mp3pm 之前\n%s", p)
+	}
+	// 光列出来不够，得明确告诉模型这是有先后的。
+	if !strings.Contains(p, "顺序") {
+		t.Errorf("提示词没有要求模型按顺序尝试音源:\n%s", p)
+	}
+	// 各源的 Hint 必须都在（"某个站怎么搜才有效"这条知识跟着站点实现走）。
+	for _, want := range []string{"中文站提示", "俄语站提示"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("提示词里缺少 Hint %q:\n%s", want, p)
+		}
+	}
+}
+
+// TestBuildSystemPromptNormalizationIsConditional 验证：规范化那段不再无条件
+// 要求"把罗马化还原成中文"。
+//
+// musicso 给的本来就是中文原名，无条件的措辞会诱导模型去"还原"一个
+// 已经是原名的字符串，白白引入出错机会。
+func TestBuildSystemPromptNormalizationIsConditional(t *testing.T) {
+	p := buildSystemPrompt([]Source{&fakeSource{name: "musicso", hint: "h"}})
+	if !strings.Contains(p, "已经是中文") {
+		t.Errorf("提示词应当说明「已经是中文的原样保留」:\n%s", p)
+	}
+}
+
+// TestDefaultMaxStepsFitsMultipleSources 守住步数上限。
+//
+// 一轮 = 一次模型调用。两个音源的最坏路径是：
+// musicso 搜 → 换词 → mp3pm 搜 → 换词 → 下载 → 下载失败改选 → 再下载 → 输出 JSON
+// 共 8 轮。原来的 6 在双源场景下会稳定撞上"未收敛"。
+func TestDefaultMaxStepsFitsMultipleSources(t *testing.T) {
+	const worstCasePath = 8
+	if defaultMaxSteps < worstCasePath {
+		t.Fatalf("defaultMaxSteps = %d，装不下双音源最坏路径的 %d 轮", defaultMaxSteps, worstCasePath)
 	}
 }
