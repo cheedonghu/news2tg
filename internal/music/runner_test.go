@@ -28,7 +28,7 @@ func (f *fakeFetcher) Fetch(_ context.Context, st *Status, dir string, _ Reporte
 	}
 	// 真 agent 会把文件落在 dir 里，这里也造一个，好验证 Runner 会清理它。
 	if f.track != nil && f.track.LocalPath == "" {
-		p := dir + string(os.PathSeparator) + downloadFileName
+		p := dir + string(os.PathSeparator) + tempFileName("fake", "1")
 		if err := os.WriteFile(p, []byte("bytes"), 0o600); err != nil {
 			return nil, err
 		}

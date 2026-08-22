@@ -26,11 +26,29 @@ const (
 	// maxCandidates 是一次搜索回给模型的候选数上限。
 	// 搜出上百条时全塞进上下文纯属烧 token，前 20 条足够模型挑。
 	maxCandidates = 20
-	// downloadFileName 是临时目录里的固定文件名。
-	// 用固定名而非歌名：此刻还没拿到模型规范化后的名字，
-	// 真正的文件名在上传时由 BuildFilename 决定。
-	downloadFileName = "download.mp3"
 )
+
+// tempFileName 为**一次下载尝试**拼出临时目录里的文件名。
+//
+// 为什么必须按候选区分，而不是所有尝试共用一个固定的 download.mp3：
+// 下载失败的分支要删掉半成品，而"下载 1 成功 → 模型改主意去下 2 → 2 中途失败"
+// 是设计里明确支持的路径（spec：下载失败 → 回灌，模型可改选另一个候选）。
+// 共用一个文件名时，删掉 2 的半成品等于把 1 那个**已经下好的**文件一并删了，
+// 可 r.track / r.downloadedID 还留着；模型退回去输出 {"id":"1"} 时 finalize
+// 的每一道校验都能过，最后返回一个 LocalPath 已不存在的 Track，两个 WebDAV
+// 目标各自 os.Open 失败，用户看到的是"全部 2 个 WebDAV 目标上传失败"——
+// 一个把 agent 层的 bug 甩锅给网络的、彻底误导的诊断。
+// 一次尝试一个文件名，这类冲突从根上就不存在了。
+//
+// 不用歌名：此刻还没拿到模型规范化后的名字，最终文件名在上传时由
+// BuildFilename 决定，这里只求唯一。
+//
+// id 虽然只可能来自 r.candidates（模型编的 id 早在 doDownload 里就被拦下了），
+// 仍然过一遍 filenameReplacer：它归根到底是从站点 HTML 里解析出来的，
+// 万一含 '/' 就会把文件写到临时目录之外去，不值得为此赌解析器永远干净。
+func tempFileName(srcName, id string) string {
+	return filenameReplacer.Replace(srcName+"-"+id) + ".mp3"
+}
 
 // errTooLarge 是下载超限的哨兵错误，供 errors.Is 判别。
 var errTooLarge = errors.New("下载内容超过大小上限")
@@ -148,7 +166,7 @@ func buildToolDefs(sources []Source) []openai.Tool {
 type run struct {
 	agent        *Agent
 	dir          string               // 下载落盘目录，由调用方创建与清理
-	rep          Reporter             //
+	rep          Reporter             // 进度出口
 	st           *Status              // 与 Runner 共享的同一份进度快照
 	candidates   map[string]Candidate // "源名:id" → 候选（直链只在这里，不进模型上下文）
 	track        *Track               // 下载成功后才非 nil
@@ -170,8 +188,13 @@ func (a *Agent) Fetch(ctx context.Context, st *Status, dir string, rep Reporter)
 		st:         st,
 		candidates: make(map[string]Candidate),
 	}
-	st.Stage = StageSearching
-	rep.Update(ctx, *st)
+	// 这里**不发首帧**。Runner 在调 Fetch 之前已经用同一份 st 发过一次了
+	// （那次的 Stage 就是 StageSearching，本函数原先那两行是逐字重复的）。
+	// 再发一次的后果很具体：第二帧内容与首帧一字不差，必然落进节流窗口被
+	// 存成 pending；只要第一轮模型调用超过 3s（很常见），补发就会送出一次
+	// 内容完全没变的 Edit —— Telegram 直接回 "message is not modified"，
+	// 记一条错误日志，还白占一次 1.5s 的全局发送锁，每次 /music 都要来一遍。
+	// 首帧归 Runner 管（它同时也负责 SendEditable 拿 msgID），这里只管往下报。
 
 	messages := []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: a.sysPrompt},
@@ -248,10 +271,31 @@ func (r *run) finalize(content string, tokens int) (*Track, error) {
 		return nil, fmt.Errorf("模型最终输出的 id %q 与实际下载的 %q 不一致", out.ID, r.downloadedID)
 	}
 
-	r.track.Artist = strings.TrimSpace(out.Artist)
-	r.track.Title = strings.TrimSpace(out.Title)
-	r.track.Tokens = tokens
-	return r.track, nil
+	// 文件真的还在吗？
+	//
+	// r.track 记的是"某一次成功下载"，但那之后可能还有别的下载尝试。临时文件
+	// 现在已经按候选分名（见 tempFileName），别的尝试删不掉它了；这道 Stat
+	// 仍然保留，是为了把"文件没了"这件事**挡在上传之前**，让错误信息说出真正
+	// 的原因。否则一旦文件不在，就变成两个 WebDAV 目标各自 os.Open 失败，
+	// 最终报成"全部 N 个 WebDAV 目标上传失败"——一条把人往网络问题上带的假线索。
+	if _, sErr := os.Stat(r.track.LocalPath); sErr != nil {
+		return nil, fmt.Errorf("已下载的音频文件不可用（%s）: %w", r.track.LocalPath, sErr)
+	}
+
+	// 注意：这里**造一个新的 Track**，而不是原地改 r.track。
+	//
+	// r.track 这个指针早就通过 r.st.Track 进过 Reporter 的快照，此刻很可能正
+	// 躺在节流的 pending 里等 time.AfterFunc 的 goroutine 读。在这里改它的
+	// Artist/Title/Tokens 就是跨 goroutine 的无同步写，-race 能实锤；而且
+	// 字符串是 ptr+len 两个字，撕裂读能让 renderStatus 拿到越界的长度直接
+	// panic —— /music 那个 goroutine 是 detached 的、没有 recover，等于把进程干掉。
+	// 值拷贝出来的这份谁都没见过，改它是安全的；已经发布出去的那个
+	// r.track 从此保持不变，快照的"自洽"承诺才真正成立（见 report.go 的 Status 注释）。
+	nt := *r.track
+	nt.Artist = strings.TrimSpace(out.Artist)
+	nt.Title = strings.TrimSpace(out.Title)
+	nt.Tokens = tokens
+	return &nt, nil
 }
 
 // stripCodeFence 剥掉可能存在的 ```json ... ``` 包裹。
@@ -305,11 +349,21 @@ func (r *run) doSearch(ctx context.Context, srcName, rawArgs string) string {
 
 	cands, err := src.Search(ctx, args.Query)
 	if err != nil {
+		// Found 必须归零：它的语义是"**最近一次**搜索的候选数"。不重置的话，
+		// "搜到 12 条 → 换词重搜 → 这次失败/零结果"之后，消息会一直挂着
+		// "搜索 2 次 · 12 个候选"，说的是一件根本没发生过的事。
+		// 原先的 r.st.Found = len(out) 坐落在下面零结果早退之后，所以这两条
+		// 分支都漏掉了它。
+		r.st.Found = 0
+		r.rep.Update(ctx, *r.st)
 		slog.ErrorContext(ctx, "音乐搜索失败", "source", srcName, "query", args.Query, "err", err)
 		return fmt.Sprintf("搜索失败: %v。可以换个关键词再试一次。", err)
 	}
 	if len(cands) == 0 {
 		// 零结果是正常路径，把音源特性再提醒一遍，引导模型换词。
+		// Found 归零的理由同上。
+		r.st.Found = 0
+		r.rep.Update(ctx, *r.st)
 		return "零结果。" + src.Hint() + " 请换关键词重试。"
 	}
 	if len(cands) > maxCandidates {
@@ -364,7 +418,8 @@ func (r *run) doDownload(ctx context.Context, srcName, rawArgs string) string {
 	r.st.Track = &Track{Artist: c.Artist, Title: c.Title, Duration: c.Duration, Source: srcName}
 	r.rep.Update(ctx, *r.st)
 
-	path := filepath.Join(r.dir, downloadFileName)
+	// 一次尝试一个文件名，绝不与别的候选撞车（理由见 tempFileName 的注释）。
+	path := filepath.Join(r.dir, tempFileName(srcName, c.ID))
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Sprintf("创建本地文件失败: %v", err)
@@ -377,10 +432,15 @@ func (r *run) doDownload(ctx context.Context, srcName, rawArgs string) string {
 
 	if dErr != nil || closeErr != nil {
 		// 删掉半成品：残缺的 mp3 传上网盘比没有更糟。
+		// 删的只是**本次尝试自己的**那个文件 —— 文件名按候选区分，所以这里
+		// 不可能再误删上一次成功下载的成果（见 tempFileName 的注释）。
 		if rmErr := os.Remove(path); rmErr != nil {
 			slog.WarnContext(ctx, "删除下载半成品失败", "path", path, "err", rmErr)
 		}
-		r.st.Track = nil
+		// 退回"上一次成功下载的那首"（一次都没成过时它本来就是 nil），
+		// 而不是无脑置 nil：本次尝试失败并不让之前那次的成功作废，
+		// 进度消息不该把已经下好的歌从画面上抹掉。
+		r.st.Track = r.track
 		r.rep.Update(ctx, *r.st)
 
 		// errors.Is 沿着 %w 包装链找哨兵错误，所以音源里包了几层都能认出来。

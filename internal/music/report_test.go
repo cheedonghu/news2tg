@@ -25,7 +25,14 @@ type fakeEditor struct {
 	sendErr error // 非 nil 时 SendEditable 返回它
 }
 
-func (f *fakeEditor) SendEditable(_ context.Context, _ int64, md string) (int, error) {
+// 两个方法都先查 ctx —— 这是**刻意**照抄 notify.Telegram.sendRaw 的行为：
+// 它的第一句就是 `if err := ctx.Err(); err != nil { return ... }`，ctx 一死
+// 请求根本不会发出。fake 若忽略 ctx，就测不出"终态被已取消的 ctx 悄悄吞掉"
+// 这类缺陷 —— 假实现比真实现宽容，是这类回归测试最常见的失效方式。
+func (f *fakeEditor) SendEditable(ctx context.Context, _ int64, md string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.sendErr != nil {
@@ -36,7 +43,10 @@ func (f *fakeEditor) SendEditable(_ context.Context, _ int64, md string) (int, e
 	return 42, nil // 固定 msgID，方便断言后续 Edit 用的是它
 }
 
-func (f *fakeEditor) Edit(_ context.Context, _ int64, msgID int, md string) error {
+func (f *fakeEditor) Edit(ctx context.Context, _ int64, msgID int, md string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.edits = append(f.edits, md)
@@ -188,6 +198,147 @@ func TestRenderStatus(t *testing.T) {
 	}
 	if !strings.Contains(md, `\-`) {
 		t.Errorf("渲染结果里没有任何转义过的 '-':\n%s", md)
+	}
+}
+
+// TestReporterDoneSurvivesCancelledCtx 是补给 Important 3 的回归测试。
+//
+// 场景：运维在下载中途重启服务（SIGTERM）→ ctx 被取消 → Fetch 返回
+// context.Canceled → Runner 置 StageFailed 并调 Done，可它手上只有那个
+// **已经死掉**的 ctx。notify.Telegram.sendRaw 的第一句就是 ctx.Err() 检查，
+// 于是终态压根不会被发出去；偏偏 send() 已经把 terminalSent 置真，
+// 之后没有任何一帧能再纠正它 —— 用户那条消息永久冻结在中间态，
+// 看不出任务已经失败了。这违反设计里唯一不能让步的那条硬约束
+// （"Done 无条件立即发出……最后一条必须准确"）。
+//
+// 判别力：fakeEditor 的两个方法都照 sendRaw 的样子先查 ctx（见其注释），
+// 所以修复前（Done 直接把调用方的 ctx 透传给 send）这个用例必然失败。
+func TestReporterDoneSurvivesCancelledCtx(t *testing.T) {
+	// 子用例一：首帧都还没发出去，ctx 就死了 —— 终态得走 SendEditable。
+	t.Run("首帧尚未发出", func(t *testing.T) {
+		fe := &fakeEditor{}
+		r := newTGReporter(fe, 1, 0)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		r.Done(ctx, Status{Query: "晴天", Stage: StageFailed, Err: "context canceled"})
+
+		fe.mu.Lock()
+		defer fe.mu.Unlock()
+		if len(fe.calls) != 1 {
+			t.Fatalf("ctx 已取消时终态仍必须发出，实际发生 %d 次传输", len(fe.calls))
+		}
+		if !strings.Contains(fe.calls[0], "context canceled") {
+			t.Errorf("终态里应带上失败原因，实际: %s", fe.calls[0])
+		}
+	})
+
+	// 子用例二：进度消息已经存在，任务中途被取消 —— 终态得把那条消息改掉。
+	t.Run("中途取消", func(t *testing.T) {
+		fe := &fakeEditor{}
+		r := newTGReporter(fe, 1, 0)
+		ctx, cancel := context.WithCancel(context.Background())
+
+		r.Update(ctx, Status{Query: "晴天", Stage: StageSearching, Searches: 1}) // 首帧，此时 ctx 还活着
+		cancel()                                                               // 收到 SIGTERM
+		r.Done(ctx, Status{Query: terminalMarker, Stage: StageFailed, Err: "context canceled"})
+
+		fe.mu.Lock()
+		defer fe.mu.Unlock()
+		if len(fe.edits) != 1 {
+			t.Fatalf("ctx 已取消时终态仍必须改掉那条进度消息，实际 Edit %d 次", len(fe.edits))
+		}
+		if !strings.Contains(fe.calls[len(fe.calls)-1], terminalMarker) {
+			t.Errorf("最后一次传输不是终态内容: %s", fe.calls[len(fe.calls)-1])
+		}
+	})
+}
+
+// TestReporterFlushUsesLatestCtx 是补给 Minor A 的回归测试。
+//
+// 缺陷：time.AfterFunc 的闭包捕获的是**第一个开窗的那次 Update** 的 ctx。
+// Runner 里 agent 那层 context.WithTimeout 的 cancel() 是非 defer 的
+// （上传不该再受 agent 超时约束），所以进入上传阶段的瞬间那个 ctx 就死了；
+// 补发时若还拿着它，notify.Telegram.sendRaw 首句的 ctx.Err() 会把整帧丢掉 ——
+// 丢的是一帧真实进度（通常正是第一帧 "⬆️ 上传"），而且 lastSent 照样前进，
+// 下一帧还得再等一个完整的节流窗口。
+//
+// 这里就是照着那条时序摆的：ctx1 开窗 → ctx1 被 cancel（模拟 agent 阶段结束）
+// → 用还活着的 ctx2 再灌一帧 → 等补发。补发必须真的发出去。
+func TestReporterFlushUsesLatestCtx(t *testing.T) {
+	fe := &fakeEditor{}
+	const throttle = 60 * time.Millisecond
+	r := newTGReporter(fe, 1, throttle)
+
+	base := context.Background()
+	r.Update(base, Status{Query: "晴天", Searches: 1}) // 首帧，立即发出
+
+	// agent 阶段那个带超时的 ctx：它开了节流窗口，随后就被 cancel 了。
+	actx, cancel := context.WithCancel(base)
+	r.Update(actx, Status{Query: "晴天", Searches: 2}) // 落进窗口，开窗并排上补发
+	cancel()                                         // Runner 里那句非 defer 的 cancel()
+
+	// 上传阶段用的是外层还活着的 ctx，再灌一帧最新状态。
+	r.Update(base, Status{Query: "晴天", Searches: 2, Targets: []TargetStatus{
+		{Name: "阿里云盘", State: TargetPending},
+	}})
+
+	time.Sleep(throttle * 3) // 等补发跑完
+
+	fe.mu.Lock()
+	defer fe.mu.Unlock()
+	if len(fe.edits) != 1 {
+		t.Fatalf("补发的那一帧被已取消的 ctx 丢掉了：Edit %d 次, want 1", len(fe.edits))
+	}
+	if !strings.Contains(fe.edits[0], "上传") {
+		t.Errorf("补发的应是最新那帧（含上传区），实际: %s", fe.edits[0])
+	}
+}
+
+// TestRenderStatusFailedDuringSearch 是补给 Minor C(a) 的回归测试：
+// 搜索阶段就失败的任务，搜索行绝不能打勾。
+// 旧写法 stageIcon(s.Stage > StageSearching) 对 StageFailed(=4) 恒为真，
+// 会渲染出 "✅ 搜索 1 次 · 0 个候选" 紧跟一个 ❌ 的自相矛盾画面。
+func TestRenderStatusFailedDuringSearch(t *testing.T) {
+	md := renderStatus(Status{
+		Query:    "不存在的歌",
+		Stage:    StageFailed,
+		Searches: 1,
+		Err:      "模型未收敛",
+	})
+	if strings.Contains(md, "✅") {
+		t.Errorf("搜索阶段就失败时不该有任何 ✅:\n%s", md)
+	}
+	if !strings.Contains(md, "⏳") {
+		t.Errorf("搜索行应显示为进行中（⏳）:\n%s", md)
+	}
+
+	// 反面：曲目已经下好、栽在上传上的失败，搜索行仍然该打勾 ——
+	// 修 (a) 不能矫枉过正把这种情况也改成 ⏳。
+	md = renderStatus(Status{
+		Query:    "晴天",
+		Stage:    StageFailed,
+		Searches: 1,
+		Found:    12,
+		Track:    &Track{Artist: "周杰伦", Title: "晴天", Duration: "03:58", Bytes: 100},
+		Err:      "全部 2 个 WebDAV 目标上传失败",
+	})
+	if !strings.Contains(md, "✅") {
+		t.Errorf("搜索成功、上传失败时搜索行仍应打勾:\n%s", md)
+	}
+}
+
+// TestRenderStatusPendingTarget 是补给 Minor D 的回归测试：
+// 排队中的目标渲染成 ⬜。这个分支原先永远走不到（Upload 把所有目标
+// 直接初始化成 TargetRunning），TargetPending 是死代码。
+func TestRenderStatusPendingTarget(t *testing.T) {
+	md := renderStatus(Status{
+		Query:   "晴天",
+		Stage:   StageUploading,
+		Targets: []TargetStatus{{Name: "阿里云盘", State: TargetPending}},
+	})
+	if !strings.Contains(md, "⬜") {
+		t.Errorf("排队中的目标应渲染成 ⬜:\n%s", md)
 	}
 }
 

@@ -19,6 +19,15 @@ import (
 // "看起来仍然实时"和"别太吵"之间的折中；觉得挤就把这个常量调大。
 const throttleInterval = 3 * time.Second
 
+// terminalSendTimeout 是终态那一帧自己的发送预算。
+//
+// Done 会用 context.WithoutCancel 摘掉调用方的取消信号（见 Done 的注释），
+// 但不能就此变成一次没有任何时限的发送，所以另配一个自己的超时。
+// 10s 的取法：sendRaw 里最坏要等 1.5s 的全局限速，等待期间是可被 ctx 打断的，
+// 10s 足够覆盖它并留出余量；真进了 bot.Send 之后 ctx 就管不着了，
+// 那一段由 notify 客户端自己的 30s HTTP 超时兜底。
+const terminalSendTimeout = 10 * time.Second
+
 // Stage 是任务所处的阶段。
 type Stage int
 
@@ -66,6 +75,19 @@ type Track struct {
 // 为什么是覆盖式完整快照而不是增量事件？
 // 因为每个快照都自洽，所以节流时丢弃中间态是安全的 —— 这是整个节流设计成立的前提。
 // 增量事件一旦丢一条，后面的状态就全错了。
+//
+// ⚠️ "自洽"这条不是白来的，Track 是**指针**：Status 按值传给 Reporter，
+// 拷进去的只是指针本身，快照和生产者仍然共享同一个 *Track。节流把快照存进
+// pending 之后，flush 会在 time.AfterFunc 的另一个 goroutine 里读它 ——
+// 此刻生产者若还在原地改那个 Track，就是货真价实的数据竞争（字符串是
+// ptr+len 两个字，撕裂读能让 renderStatus 拿到越界的长度直接 panic，
+// 而 /music 那个 goroutine 是 detached 的、没有 recover，等于把进程干掉）。
+//
+// 所以本包的硬约定是：**一个 *Track 一旦被塞进 Status 交出去，就永远不再改；
+// 要改就造一个新的**（见 agent.go 的 finalize —— 它正是因此才不原地改 r.track）。
+// 之所以不干脆改成值类型：nil 在这里是有语义的（"还没选定曲目"），换成值类型
+// 就得再引入一个 HasTrack 之类的布尔量，把一个编译器帮你看着的状态
+// 降级成一个需要人肉维持一致的状态，得不偿失。
 type Status struct {
 	Query    string         // 用户原始输入
 	Stage    Stage          //
@@ -105,6 +127,19 @@ type tgReporter struct {
 	timer    *time.Timer // 节流窗口结束时补发用；nil 表示当前没有待补发
 	finished bool        // Done 之后为 true，之后的 Update 一律忽略（早退优化，见下）
 
+	// pendingCtx 与 pending 成对存放，而不是让 time.AfterFunc 的闭包去捕获 ctx。
+	//
+	// 捕获闭包会把**第一个开窗的那次 Update** 的 ctx 一直用到补发为止。
+	// Runner 里 agent 那层 context.WithTimeout 的 cancel() 是非 defer 的
+	// （上传不该再受 agent 超时约束），所以那个 ctx 在进入上传阶段的瞬间就死了；
+	// 于是补发的那一帧（通常恰恰是第一帧 "⬆️ 上传"）会被 notify.Telegram.sendRaw
+	// 首句的 ctx.Err() 整条丢掉 —— 丢的是一帧真实进度，而且 lastSent 照样前进，
+	// 下一帧还得再等一个完整的节流窗口。存最新的 ctx 就没这个问题。
+	//
+	// 往结构体里塞 ctx 通常是反模式，这里是有意为之：pending 本来就是"被推迟的
+	// 那一次调用"，ctx 是那次调用的组成部分，理应跟着一起被推迟。
+	pendingCtx context.Context
+
 	// sendMu 把"判断该不该发 + 真正发请求"整段串成原子操作。
 	//
 	// 只用 mu 不够：Update/flush 的"检查 finished/terminalSent → 释放 mu →
@@ -141,11 +176,14 @@ func (r *tgReporter) Update(ctx context.Context, s Status) {
 	// time.Since(零值) 是个巨大的正数，所以首次调用 wait 必为负，直接发出。
 	wait := r.throttle - time.Since(r.lastSent)
 	if wait > 0 {
-		// 落在节流窗口内：只留最新快照，并安排一次窗口结束后的补发。
+		// 落在节流窗口内：只留最新快照（连同它的 ctx），并安排一次窗口结束后的补发。
 		// timer 非 nil 说明补发已经排上了，不用再排一次 —— 它会取到最新的 pending。
 		r.pending = &s
+		r.pendingCtx = ctx
 		if r.timer == nil {
-			r.timer = time.AfterFunc(wait, func() { r.flush(ctx) })
+			// 注意闭包里不捕获 ctx：补发时用的必须是最新那次 Update 的 ctx，
+			// 理由见 pendingCtx 字段上的注释。
+			r.timer = time.AfterFunc(wait, r.flush)
 		}
 		r.mu.Unlock()
 		return
@@ -170,17 +208,43 @@ func (r *tgReporter) Done(ctx context.Context, s Status) {
 		r.timer = nil
 	}
 	r.pending = nil
+	r.pendingCtx = nil
 	r.finished = true
 	r.mu.Unlock()
+
+	// 终态必须挣脱调用方的 ctx。
+	//
+	// Runner 的四条 Done 路径里，好几条传进来的 ctx **恰恰已经被取消了**：
+	// 运维在下载中途重启服务（SIGTERM）→ ctx 取消 → Fetch 返回 context.Canceled
+	// → Runner 置 StageFailed 并 Done；600s 总预算到点同理。而
+	// notify.Telegram.sendRaw 的第一句就是 ctx.Err() 检查，于是这条终态
+	// 根本不会被尝试发出 —— 偏偏 send() 已经把 terminalSent 置真，之后
+	// 再没有任何一帧能纠正它，用户那条消息就永久冻结在
+	// "⏳ 搜索 1 次 · 12 个候选" 这种中间态上，看不出任务已经失败了。
+	//
+	// 设计里唯一不能让步的一条就是 "Done 无条件立即发出……最后一条必须准确"，
+	// 所以这里用 context.WithoutCancel 摘掉取消信号（**值照留**，logx 的
+	// task_id 因此不会丢），再套一个自己的短超时，免得反过来变成一次
+	// 不受任何约束的发送。
+	//
+	// 为什么修在这里而不是 Runner 的四个调用点：这条保证是 Reporter 接口
+	// 契约的一部分（"Done 必须立即发出"），属于实现方的责任。放在调用点
+	// 等于把同一段防御抄四遍，将来多一条 Done 路径就会漏掉一次；而且别的
+	// Reporter 实现也拿不到这份保证。
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalSendTimeout)
+	defer cancel()
 
 	// finished 只挡未来的 Update（见 Update 顶部的早退检查），挡不住已经
 	// 在飞的并发调用（它们的早退检查在 finished=true 之前就已经通过了）。
 	// 真正的“终态不会被覆盖”保证在 send() 里的 sendMu + terminalSent。
-	r.send(ctx, s, true)
+	r.send(dctx, s, true)
 }
 
 // flush 是节流窗口结束时的补发：把最新的 pending 快照发出去。
-func (r *tgReporter) flush(ctx context.Context) {
+//
+// 不收 ctx 参数：要用的 ctx 存在 pendingCtx 里，跟 pending 一起取，
+// 这样补发用的永远是**最新**那次 Update 的 ctx（理由见 pendingCtx 的注释）。
+func (r *tgReporter) flush() {
 	r.mu.Lock()
 	r.timer = nil
 	if r.finished || r.pending == nil {
@@ -188,7 +252,9 @@ func (r *tgReporter) flush(ctx context.Context) {
 		return
 	}
 	s := *r.pending // 解引用拷一份，锁外用
+	ctx := r.pendingCtx
 	r.pending = nil
+	r.pendingCtx = nil
 	// 跟 Update 里的理由一样：先占住节流位，避免跟这一刻恰好并发进来的
 	// Update 一起绕过节流窗口，同时触发两次真实传输。
 	r.lastSent = time.Now()
@@ -264,9 +330,9 @@ func renderStatus(s Status) string {
 	var b strings.Builder
 	b.WriteString("🎵 *" + esc(s.Query) + "*\n")
 
-	// 搜索行：搜过才显示。阶段已经越过搜索就打勾，否则显示进行中。
+	// 搜索行：搜过才显示。搜索这一步走完了就打勾，否则显示进行中。
 	if s.Searches > 0 {
-		b.WriteString(stageIcon(s.Stage > StageSearching) + " " +
+		b.WriteString(stageIcon(searchDone(s)) + " " +
 			esc(fmt.Sprintf("搜索 %d 次 · %d 个候选", s.Searches, s.Found)) + "\n")
 	}
 
@@ -304,6 +370,20 @@ func renderStatus(s Status) string {
 	}
 
 	return b.String()
+}
+
+// searchDone 判断"搜索这一步是否已经走完"，决定搜索行打勾还是显示进行中。
+//
+// 不能图省事写成 s.Stage > StageSearching：StageFailed 的枚举值是 4，
+// 比 StageSearching 大，于是一个**在搜索阶段就失败**的任务会渲染成
+// "✅ 搜索 1 次 · 0 个候选" 紧跟一个 "❌ ..."，自己打自己的脸。
+// 失败态必须单独判断：只有已经选定并下载了曲目（Track != nil）才说明
+// 搜索确实走完了 —— 那种"搜索成功、上传全挂"的失败仍然应该打勾。
+func searchDone(s Status) bool {
+	if s.Stage == StageFailed {
+		return s.Track != nil
+	}
+	return s.Stage > StageSearching
 }
 
 // stageIcon 已完成打勾，进行中显示沙漏。

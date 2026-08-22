@@ -26,11 +26,16 @@ func writeTempMP3(t *testing.T, content string) string {
 
 // davRecorder 是一个假 WebDAV 服务端，记录收到的 PUT。
 type davRecorder struct {
-	mu     sync.Mutex
-	paths  []string // 收到的请求路径
-	bodies []string // 收到的请求体
-	authOK bool     // 是否所有请求都带对了 Basic Auth
-	status int      // 返回的状态码，0 视作 201
+	mu    sync.Mutex
+	paths []string // 收到的请求路径（**已解码**：r.URL.Path 是解转义之后的）
+	// rawPaths 是**未解码**的请求路径（r.URL.EscapedPath()）。
+	// 两个都记是必要的：paths 能断言"路径末段就是清洗后的文件名"，
+	// 但它天然看不出转义有没有做 —— 中文和空格解码后跟没转义时长得一模一样。
+	// 真正把 url.PathEscape 锁死的是 rawPaths。
+	rawPaths []string
+	bodies   []string // 收到的请求体
+	authOK   bool     // 是否所有请求都带对了 Basic Auth
+	status   int      // 返回的状态码，0 视作 201
 }
 
 func (d *davRecorder) handler() http.HandlerFunc {
@@ -39,6 +44,7 @@ func (d *davRecorder) handler() http.HandlerFunc {
 		user, pass, ok := r.BasicAuth()
 		d.mu.Lock()
 		d.paths = append(d.paths, r.URL.Path)
+		d.rawPaths = append(d.rawPaths, r.URL.EscapedPath())
 		d.bodies = append(d.bodies, string(body))
 		d.authOK = ok && user == "alist" && pass == "pw"
 		code := d.status
@@ -62,7 +68,8 @@ func TestUploadBothSucceed(t *testing.T) {
 	}, "alist", "pw")
 
 	path := writeTempMP3(t, "ID3fake")
-	got, err := u.Upload(context.Background(), path, "周杰伦 - 晴天.mp3", nil)
+	const filename = "周杰伦 - 晴天.mp3" // 中文 + 空格，两种都必须被转义
+	got, err := u.Upload(context.Background(), path, filename, nil)
 	if err != nil {
 		t.Fatalf("Upload 意外报错: %v", err)
 	}
@@ -88,10 +95,109 @@ func TestUploadBothSucceed(t *testing.T) {
 			t.Errorf("收到的内容 = %q, want %q", b, "ID3fake")
 		}
 	}
-	// 两个目标各自的路径前缀必须不同，且文件名被 URL 转义过（含中文和空格）。
+	// 两个目标各自的路径前缀必须不同。
 	joined := strings.Join(rec.paths, " ")
 	if !strings.Contains(joined, "/dav/aliyun/Music/") || !strings.Contains(joined, "/dav/onedrive/Music/") {
 		t.Errorf("PUT 路径不对: %v", rec.paths)
+	}
+	// spec 的测试项"PUT 路径就是清洗后的文件名"：只查目录前缀是查不到的，
+	// 必须把末段一起断死 —— 解码后的路径末段必须**恰好**是那个文件名，
+	// 不多不少，也没有被拆成子目录。
+	wantSuffix := "/" + filename
+	for i, p := range rec.paths {
+		if !strings.HasSuffix(p, wantSuffix) {
+			t.Errorf("第 %d 个 PUT 的解码路径 %q 末段不是清洗后的文件名 %q", i, p, filename)
+		}
+	}
+	// 顺带记一笔：中文和空格**证明不了** url.PathEscape 的存在。
+	// net/http 在写请求时会调 URL.EscapedPath()，发现 RawPath 不是合法转义就
+	// 自己按 Path 重新转义一遍，于是"不转义"和"转义了"最终打到线上的字节
+	// 完全相同（实测过）。真正只有 PathEscape 才能救的是下面那个用例里的
+	// '#' 和 '%'，锁死转义行为的责任在它身上，别指望这里。
+	for i, raw := range rec.rawPaths {
+		if strings.ContainsAny(raw, " ") {
+			t.Errorf("第 %d 个 PUT 的原始路径 %q 里不该出现裸空格", i, raw)
+		}
+	}
+}
+
+// TestUploadEscapesPathOnlySpecials 是补给 Minor E 的回归测试，
+// 也是真正把 url.PathEscape 锁死的那一个。
+//
+// 为什么不用中文/空格来测：net/http 写请求时会自己补转义，
+// 有没有 PathEscape 打到线上的字节一模一样，断言没有判别力（见上一个用例的注释）。
+//
+// '#' 和 '%' 才是分水岭，而且它们**都不在 filenameReplacer 的替换表里**，
+// 也就是说完全可能出现在真实歌名里（"Sonata in C# minor"、"100% Love"）：
+//   - 少了 PathEscape，'#' 会被 url.Parse 当成 fragment 分隔符，
+//     PUT 实际落到 /dav/Sonata in C —— 文件名被悄悄截断，传上去的是个错名文件；
+//   - '%' 更直接，http.NewRequest 当场报 invalid URL escape，整个目标上传失败。
+func TestUploadEscapesPathOnlySpecials(t *testing.T) {
+	for _, filename := range []string{"Sonata in C# minor.mp3", "100% Love.mp3"} {
+		t.Run(filename, func(t *testing.T) {
+			rec := &davRecorder{}
+			srv := httptest.NewServer(rec.handler())
+			t.Cleanup(srv.Close)
+
+			u := NewUploader(srv.Client(), []Target{{Name: "A", URL: srv.URL + "/dav"}}, "alist", "pw")
+
+			got, err := u.Upload(context.Background(), writeTempMP3(t, "x"), filename, nil)
+			if err != nil {
+				t.Fatalf("Upload 意外报错: %v", err)
+			}
+			if got[0].State != TargetOK {
+				t.Fatalf("目标状态 = %d, want TargetOK；err=%s", got[0].State, got[0].Err)
+			}
+
+			rec.mu.Lock()
+			defer rec.mu.Unlock()
+			if len(rec.paths) != 1 {
+				t.Fatalf("服务端收到 %d 个 PUT, want 1", len(rec.paths))
+			}
+			// 解码回来必须一字不差 —— 说明 '#' / '%' 是作为**文件名的一部分**
+			// 送过去的，而不是被 URL 语法吃掉。
+			if want := "/dav/" + filename; rec.paths[0] != want {
+				t.Errorf("PUT 路径 = %q, want %q", rec.paths[0], want)
+			}
+		})
+	}
+}
+
+// TestUploadSeedsPendingState 是补给 Minor D 的回归测试：
+// 第一次 onProgress 回调（goroutine 还一个都没起）里，所有目标都必须是
+// TargetPending。改造前这里被直接初始化成 TargetRunning —— 一是在撒谎，
+// 二是让 TargetPending / renderStatus 的 ⬜ 分支成了永远走不到的死代码。
+func TestUploadSeedsPendingState(t *testing.T) {
+	srv := httptest.NewServer((&davRecorder{}).handler())
+	t.Cleanup(srv.Close)
+
+	u := NewUploader(srv.Client(), []Target{
+		{Name: "A", URL: srv.URL + "/dav"},
+		{Name: "B", URL: srv.URL + "/dav"},
+	}, "alist", "pw")
+
+	var mu sync.Mutex
+	var first []TargetStatus
+	_, err := u.Upload(context.Background(), writeTempMP3(t, "x"), "a.mp3", func(ts []TargetStatus) {
+		mu.Lock()
+		defer mu.Unlock()
+		if first == nil {
+			first = ts
+		}
+	})
+	if err != nil {
+		t.Fatalf("Upload 意外报错: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(first) != 2 {
+		t.Fatalf("首次回调收到 %d 个目标状态, want 2", len(first))
+	}
+	for _, s := range first {
+		if s.State != TargetPending {
+			t.Errorf("目标 %s 的初始状态 = %d, want TargetPending（此刻还没有 goroutine 起来）", s.Name, s.State)
+		}
 	}
 }
 

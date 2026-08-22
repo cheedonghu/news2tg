@@ -67,7 +67,11 @@ func NewUploader(httpClient *http.Client, targets []Target, user, pass string) *
 func (u *Uploader) Upload(ctx context.Context, localPath, filename string, onProgress func([]TargetStatus)) ([]TargetStatus, error) {
 	states := make([]TargetStatus, len(u.targets))
 	for i, t := range u.targets {
-		states[i] = TargetStatus{Name: t.Name, State: TargetRunning}
+		// 初始状态是"排队中"而不是"上传中"：这一刻一个 goroutine 都还没起，
+		// 直接写 TargetRunning 是在撒谎（顺带也让 TargetPending 变成了死代码，
+		// renderStatus 里的 ⬜ 分支永远走不到）。
+		// 真正翻成 TargetRunning 的时机在下面每个 goroutine 的入口处。
+		states[i] = TargetStatus{Name: t.Name, State: TargetPending}
 	}
 
 	// mu 保护 states：多个上传 goroutine 会并发改各自那一格。
@@ -92,6 +96,14 @@ func (u *Uploader) Upload(ctx context.Context, localPath, filename string, onPro
 		// 但显式传参更直白，也和仓库里其它并发代码的谨慎风格一致。
 		go func(idx int, tg Target) {
 			defer wg.Done()
+
+			// 进到这里才算真的开始传，此时才翻成"上传中"。
+			// 刻意**不**在这里额外 notify 一次：N 个目标就会多出 N 次进度刷新，
+			// 而它们几乎同时发生，节流窗口里最终也只合并成一帧，白占发送锁。
+			// 这个状态会搭下一次 notify（某个目标传完时）的顺风车一起发出去。
+			mu.Lock()
+			states[idx].State = TargetRunning
+			mu.Unlock()
 
 			// 每个目标独立超时：一个网盘卡住不该拖垮另一个。
 			cctx, cancel := context.WithTimeout(ctx, u.timeout)
