@@ -325,3 +325,51 @@ func TestBuildFilenameTruncatesByRune(t *testing.T) {
 		t.Errorf("截断后不是合法 UTF-8: %q", base)
 	}
 }
+
+// TestUploadSingleTargetSucceeds 验证只有一个目标时上传正常。
+// 这条路径在校验改成"至少一个完整目标"之前，配置层根本到不了。
+func TestUploadSingleTargetSucceeds(t *testing.T) {
+	rec := &davRecorder{}
+	srv := httptest.NewServer(rec.handler())
+	t.Cleanup(srv.Close)
+
+	u := NewUploader(srv.Client(), []Target{
+		{Name: "阿里云盘", URL: srv.URL + "/dav/aliyun/Music"},
+	}, "alist", "pw")
+
+	got, err := u.Upload(context.Background(), writeTempMP3(t, "ID3fake"), "a.mp3", nil)
+	if err != nil {
+		t.Fatalf("单目标上传意外失败: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("返回 %d 个目标状态, want 1", len(got))
+	}
+	if got[0].State != TargetOK {
+		t.Errorf("状态 = %d, want TargetOK；err=%s", got[0].State, got[0].Err)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.paths) != 1 {
+		t.Errorf("服务端收到 %d 个 PUT, want 1", len(rec.paths))
+	}
+}
+
+// TestUploadSingleTargetFails 验证只有一个目标且它失败时，整体判定为失败。
+// "至少一个成功即算成功"在只有一个目标时退化成"它必须成功"。
+func TestUploadSingleTargetFails(t *testing.T) {
+	badSrv := httptest.NewServer((&davRecorder{status: http.StatusInsufficientStorage}).handler())
+	t.Cleanup(badSrv.Close)
+
+	u := NewUploader(badSrv.Client(), []Target{
+		{Name: "阿里云盘", URL: badSrv.URL + "/dav"},
+	}, "alist", "pw")
+
+	got, err := u.Upload(context.Background(), writeTempMP3(t, "x"), "a.mp3", nil)
+	if err == nil {
+		t.Fatal("唯一的目标失败时应当返回 error")
+	}
+	if len(got) != 1 || got[0].State != TargetFailed {
+		t.Fatalf("got = %+v, want 单个 TargetFailed", got)
+	}
+}

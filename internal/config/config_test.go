@@ -178,15 +178,54 @@ webdav_url_2  = "http://alist:5244/dav/onedrive/Music"
 	}
 }
 
-// TestFromFileMusicPartial 验证：填了一部分就直接启动失败。
-// 半配置一定是打字漏了，静默降级只会让人对着「上传失败」抓瞎。
-func TestFromFileMusicPartial(t *testing.T) {
+// TestFromFileMusicSingleTarget 验证：只配第一个目标是合法的。
+// 这是本次改动的核心 —— 原先「六项全配」会让它启动失败。
+func TestFromFileMusicSingleTarget(t *testing.T) {
+	cfg, err := FromFile(writeTempTOML(t, musicTOML(`
+[music]
+webdav_user   = "alist"
+webdav_pass   = "pw"
+webdav_name_1 = "阿里云盘"
+webdav_url_1  = "http://alist:5244/dav/aliyun/Music"
+`)))
+	if err != nil {
+		t.Fatalf("只配一个目标时 FromFile 不该报错: %v", err)
+	}
+	if !cfg.Music.Configured() {
+		t.Fatal("只配一个完整目标时 Configured() 应为 true")
+	}
+	if cfg.Music.WebdavName2 != "" || cfg.Music.WebdavURL2 != "" {
+		t.Errorf("第二个目标应为空，实际 name2=%q url2=%q", cfg.Music.WebdavName2, cfg.Music.WebdavURL2)
+	}
+}
+
+// TestFromFileMusicSecondTargetOnly 验证：只配第二个目标同样合法。
+// 校验规则说的是"至少一个完整目标"，不是"第一个必须配"。
+func TestFromFileMusicSecondTargetOnly(t *testing.T) {
+	cfg, err := FromFile(writeTempTOML(t, musicTOML(`
+[music]
+webdav_user   = "alist"
+webdav_pass   = "pw"
+webdav_name_2 = "OneDrive"
+webdav_url_2  = "http://alist:5244/dav/onedrive/Music"
+`)))
+	if err != nil {
+		t.Fatalf("只配第二个目标时 FromFile 不该报错: %v", err)
+	}
+	if !cfg.Music.Configured() {
+		t.Fatal("只配第二个完整目标时 Configured() 应为 true")
+	}
+}
+
+// TestFromFileMusicInvalid 锁死所有应当启动失败的配置形态。
+// 半个目标一定是打字漏了；静默降级只会让人对着「上传失败」抓瞎。
+func TestFromFileMusicInvalid(t *testing.T) {
 	cases := []struct {
 		name    string
 		section string
 	}{
 		{
-			name: "只填了凭据没填目标",
+			name: "只填了凭据，一个目标都没有",
 			section: `
 [music]
 webdav_user = "alist"
@@ -194,7 +233,34 @@ webdav_pass = "pw"
 `,
 		},
 		{
-			name: "第二个目标缺 url",
+			name: "有目标但缺 user",
+			section: `
+[music]
+webdav_pass   = "pw"
+webdav_name_1 = "阿里云盘"
+webdav_url_1  = "http://alist:5244/dav/aliyun/Music"
+`,
+		},
+		{
+			name: "有目标但缺 pass",
+			section: `
+[music]
+webdav_user   = "alist"
+webdav_name_1 = "阿里云盘"
+webdav_url_1  = "http://alist:5244/dav/aliyun/Music"
+`,
+		},
+		{
+			name: "第一个目标只有 name 没有 url（半个目标）",
+			section: `
+[music]
+webdav_user   = "alist"
+webdav_pass   = "pw"
+webdav_name_1 = "阿里云盘"
+`,
+		},
+		{
+			name: "目标 1 完整，目标 2 是半个（仍要报错）",
 			section: `
 [music]
 webdav_user   = "alist"
@@ -205,42 +271,31 @@ webdav_name_2 = "OneDrive"
 `,
 		},
 		{
-			name: "只有空白字符也算填了",
+			name: "只有空白字符也算填了，不能被当成没配",
 			section: `
 [music]
 webdav_user = "   "
 `,
 		},
 		{
-			// 复现 review 指出的 Critical：五项填了正经值，只有一项是纯空格
-			// （典型的打字失误——多敲了个空格、或者复制粘贴漏了值）。
-			// touched() 看原始值，六项都非空，不会被误判成"整段没配"；
-			// usable() 一 TrimSpace，webdav_pass 就现形成空串，必须报错，
-			// 不能像 Configured() 那样悄悄把整个 [music] 判成"未配置"就完事。
-			name: "五项真值加一项纯空格",
+			// 五项真值 + 一项纯空格：那个空格项不能被混进"没填"里，
+			// 否则整段会被误判成"没配"而放行，管理员拿到一个看似正常启动、
+			// 实则 /music 静默不可用的进程。
+			name: "其余齐全但 url_1 是纯空格",
 			section: `
 [music]
 webdav_user   = "alist"
-webdav_pass   = "   "
+webdav_pass   = "pw"
 webdav_name_1 = "阿里云盘"
-webdav_url_1  = "http://alist:5244/dav/aliyun/Music"
-webdav_name_2 = "OneDrive"
-webdav_url_2  = "http://alist:5244/dav/onedrive/Music"
+webdav_url_1  = "   "
 `,
 		},
 	}
 	for _, c := range cases {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
-			cfg, err := FromFile(writeTempTOML(t, musicTOML(c.section)))
-			if err == nil {
-				t.Fatalf("FromFile 期望报错，却成功返回 %+v", cfg)
-			}
-			if cfg != nil {
-				t.Errorf("报错时应返回 nil *Config，实际 %+v", cfg)
-			}
-			if !strings.Contains(err.Error(), "[music]") {
-				t.Errorf("错误信息 %q 应指明是 [music] 段的问题", err.Error())
+			if _, err := FromFile(writeTempTOML(t, musicTOML(c.section))); err == nil {
+				t.Fatal("该配置应当导致启动失败，却成功了")
 			}
 		})
 	}

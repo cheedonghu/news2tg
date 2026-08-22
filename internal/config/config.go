@@ -109,9 +109,12 @@ type Network struct {
 // Music 段：/music 指令的 WebDAV 上传目标与凭据。
 //
 // 为什么是六个平铺字段而不是一个数组？
-// 需求是"固定两个目标、每次都传"，不需要动态列表；平铺字段最直白，
+// 需求是"固定至多两个目标、每次都传"，不需要动态列表；平铺字段最直白，
 // 也不用为 TOML 数组解析写额外代码。Go 侧组装成 []music.Target 之后，
 // Uploader 内部仍然是按切片循环的，将来加第三个网盘只需在这里加两个字段。
+//
+// 两个目标**不要求都配**：只配一个是合法的（现实里常有一个网盘临时挂掉）。
+// 但"半个目标"（有 name 没 url，或反之）仍然报错 —— 那一定是打字漏了。
 //
 // 凭据只写在 myconfig.toml（已 gitignore）里 —— config.toml 是进 git 的模板，
 // 仓库又是公开的，密码写进去等于直接泄漏。
@@ -124,8 +127,8 @@ type Music struct {
 	WebdavURL2  string `toml:"webdav_url_2"`
 }
 
-// fields 把六个字段收成一张「配置项名 → 值」表，供 Configured/validate 共用，
-// 避免两处各写一遍字段清单（加字段时只改这里一处）。
+// fields 把六个字段收成一张「配置项名 → 值」表，供 touched 判定共用，
+// 避免多处各写一遍字段清单（加字段时只改这里一处）。
 // 返回切片而不是 map：要保证报错时字段顺序稳定，map 遍历顺序是随机的。
 func (m Music) fields() []struct {
 	key string
@@ -144,6 +147,29 @@ func (m Music) fields() []struct {
 	}
 }
 
+// targetState 描述一个上传目标的配置完整度。
+type targetState int
+
+const (
+	targetEmpty      targetState = iota // name 和 url 都是空白 —— 该目标没配，合法
+	targetComplete                      // name 和 url 都有可用值 —— 该目标可用
+	targetHalfBaked                     // 只有一项有值 —— 一定是打字漏了，必须报错
+)
+
+// classifyTarget 判定一个目标的三态。
+// 抽成函数是因为两个目标要各判一次，而这条规则一旦两处各写一遍就会走样。
+func classifyTarget(name, url string) targetState {
+	n, u := usable(name), usable(url)
+	switch {
+	case n && u:
+		return targetComplete
+	case !n && !u:
+		return targetEmpty
+	default:
+		return targetHalfBaked
+	}
+}
+
 // touched 判断某一项"用户是否敲过字符"：只要原始值非空就算，哪怕只是纯空格。
 // 用来判断整段 [music] 到底有没有在用。
 // 注意不能用 TrimSpace 判断——"六项全打成空格"如果被当成"没碰过"，
@@ -159,34 +185,32 @@ func usable(val string) bool {
 	return strings.TrimSpace(val) != ""
 }
 
-// Configured 报告 [music] 是否配置完整（六项是否全部 usable）。
-// 只要经过 validate() 校验（见下）成功返回的 cfg，Configured() 就只有两种结果：
-// 要么全部 usable（六项都填了正经值），要么零项 touched（整段没配）——
-// 不会存在"进程正常启动了，但其实只是半配置、Configured() 悄悄是 false"这种状态；
+// Configured 报告 /music 功能是否可用：凭据齐全，且至少有一个完整的上传目标。
+//
+// 只要经过 validate() 校验成功返回的 cfg，Configured() 就只有两种结果：
+// 要么可用，要么整段没碰（功能关闭）—— 不会存在"进程正常启动了，
+// 但其实只是半配置、Configured() 悄悄是 false"这种状态；
 // 那种状态在 validate() 里已经变成 FromFile 报错、根本起不来了。
 func (m Music) Configured() bool {
-	for _, f := range m.fields() {
-		if !usable(f.val) {
-			return false
-		}
+	if !usable(m.WebdavUser) || !usable(m.WebdavPass) {
+		return false
 	}
-	return true
+	return classifyTarget(m.WebdavName1, m.WebdavURL1) == targetComplete ||
+		classifyTarget(m.WebdavName2, m.WebdavURL2) == targetComplete
 }
 
-// validate 执行「要么整段不碰，要么六项全部给出可用值」的校验：
-//   - 零项 touched（六项原始值全是空串）→ 整段没配，功能关闭，返回 nil
+// validate 执行「要么整段不碰，要么配成一个能用的样子」的校验：
+//   - 零项 touched → 整段没配，功能关闭，返回 nil
 //     （现有部署没有 [music] 段，不能因为这次升级就启动失败）
-//   - 有 touched 但六项没有全部 usable（缺项，或某项填的是纯空格）→ 返回 error，
-//     列出所有不 usable 的项名，启动即失败
-//   - 六项全部 usable → 返回 nil
+//   - 碰了，但 user/pass 缺失、或某个目标是半个、或一个完整目标都没有 → error
+//   - 否则 → nil
 //
-// 这里故意拆成两个谓词而不是一个：先用 touched（原始值非空）判断"这一段是不是在用"，
+// 这里故意拆成两个谓词：先用 touched（原始值非空）判断"这一段是不是在用"，
 // 再用 usable（TrimSpace 非空）判断"填的东西能不能用"。只用一个会顾此失彼——
-// 全用 TrimSpace 的话，"五项真值 + 一项纯空格"里那个空格项会被当成"没填"，
+// 全用 TrimSpace 的话，"其余真值 + 一项纯空格"里那个空格项会被当成"没填"，
 // 和其余全空的字段混在一起，误判成"整段没配"而放行，管理员会拿着一个
 // 看似正常启动、实则 /music 静默不可用的进程去抓瞎；全用原始值的话，
-// "六项全打成空格"又会被当成"六项都碰过"，可实际一个能用的值都没有，
-// 同样不该被放过。
+// "全打成空格"又会被当成"都碰过"，可实际一个能用的值都没有，同样不该被放过。
 func (m Music) validate() error {
 	anyTouched := false
 	for _, f := range m.fields() {
@@ -198,17 +222,34 @@ func (m Music) validate() error {
 	if !anyTouched {
 		return nil // 整段没配，功能关闭
 	}
-	var unusable []string
-	for _, f := range m.fields() {
-		if !usable(f.val) {
-			unusable = append(unusable, f.key)
-		}
+
+	// problems 收集所有毛病后一次性报出来，而不是遇到第一个就返回 ——
+	// 让改配置的人一轮就能全改对，不用来回试。
+	var problems []string
+	if !usable(m.WebdavUser) {
+		problems = append(problems, "webdav_user 未填")
 	}
-	if len(unusable) == 0 {
-		return nil // 六项全部 usable，配置完整
+	if !usable(m.WebdavPass) {
+		problems = append(problems, "webdav_pass 未填")
+	}
+
+	s1 := classifyTarget(m.WebdavName1, m.WebdavURL1)
+	s2 := classifyTarget(m.WebdavName2, m.WebdavURL2)
+	if s1 == targetHalfBaked {
+		problems = append(problems, "目标 1 只配了一半（webdav_name_1 与 webdav_url_1 必须同时填写）")
+	}
+	if s2 == targetHalfBaked {
+		problems = append(problems, "目标 2 只配了一半（webdav_name_2 与 webdav_url_2 必须同时填写）")
+	}
+	if s1 != targetComplete && s2 != targetComplete {
+		problems = append(problems, "至少需要一个完整的上传目标（name + url）")
+	}
+
+	if len(problems) == 0 {
+		return nil
 	}
 	// strings.Join 把切片按分隔符拼成一句话，比循环拼字符串直观。
-	return fmt.Errorf("[music] 段配置不完整，缺少：%s（该段要么整段不配、要么六项全配）", strings.Join(unusable, ", "))
+	return fmt.Errorf("[music] 段配置有误：%s", strings.Join(problems, "；"))
 }
 
 // Config 是顶层配置结构，对应整个 config.toml。

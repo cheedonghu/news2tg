@@ -213,10 +213,16 @@ func main() {
 		sources := []music.Source{music.NewMp3PM(httpClient)}
 		// 复用 DeepSeek 的 key 和 agent_model（同样需要 function calling 能力）。
 		musicAgent := music.NewAgent(cfg.DeepSeek.APIToken, cfg.DeepSeek.AgentModel, sources)
-		// 两个固定目标；Uploader 内部按切片循环，加第三个网盘只需在这里多一项。
-		targets := []music.Target{
-			{Name: cfg.Music.WebdavName1, URL: cfg.Music.WebdavURL1},
-			{Name: cfg.Music.WebdavName2, URL: cfg.Music.WebdavURL2},
+		// 上传目标：只收**完整**的那些。
+		// 配置校验已经保证"至少有一个完整目标、且不存在半个目标"，
+		// 所以这里只需判空，不必再处理半配置的情况。
+		// Uploader 内部按切片循环，1 个和 2 个走的是同一条代码路径。
+		targets := make([]music.Target, 0, 2)
+		if strings.TrimSpace(cfg.Music.WebdavURL1) != "" {
+			targets = append(targets, music.Target{Name: cfg.Music.WebdavName1, URL: cfg.Music.WebdavURL1})
+		}
+		if strings.TrimSpace(cfg.Music.WebdavURL2) != "" {
+			targets = append(targets, music.Target{Name: cfg.Music.WebdavName2, URL: cfg.Music.WebdavURL2})
 		}
 		uploader := music.NewUploader(httpClient, targets, cfg.Music.WebdavUser, cfg.Music.WebdavPass)
 		// tgClient 同时是 notify.Notifier 和 notify.Editor，这里用的是后者。
