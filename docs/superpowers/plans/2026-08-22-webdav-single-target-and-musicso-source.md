@@ -802,7 +802,7 @@ Cloudflare：非浏览器 UA 一律 403 + cf-mitigated: challenge + 体内含 "J
     <div class="song-item">
         <div class="song-index">4</div>
         <div class="song-info">
-            <div class="song-name">畸形条目：href 不符合 /music/<id>-<t>- 形状</div>
+            <div class="song-name">畸形条目一：href 形状不对</div>
             <div class="song-artist"><a class="song-artist-link" href="/s/x">某人</a></div>
         </div>
         <span class="song-source src-qq">QQ源</span>
@@ -811,7 +811,7 @@ Cloudflare：非浏览器 UA 一律 403 + cf-mitigated: challenge + 体内含 "J
     <div class="song-item">
         <div class="song-index">5</div>
         <div class="song-info">
-            <div class="song-name">畸形条目：整个 song-play 链接都不存在</div>
+            <div class="song-name">畸形条目二：没有 song-play 链接</div>
             <div class="song-artist"><a class="song-artist-link" href="/s/y">另一个人</a></div>
         </div>
         <span class="song-source src-netease">网易源</span>
