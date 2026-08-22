@@ -1684,7 +1684,8 @@ func (m Music) EffectiveSources() []string {
 func (m Music) validateSources() []string {
 	// 完全没写这一行 → 走默认，没什么可校验的。
 	// 注意 TOML 里 sources = [] 解析出来同样是长度 0 的切片，与"没写"无法区分，
-	// 所以那个 case 由 rawSourcesPresent 单独兜（见 validate 的调用处）。
+	// 所以"显式写了空数组"那个 case 在这里兜不住，由 FromFile 里的
+	// toml.MetaData.IsDefined("music", "sources") 单独拦（见 Step 3(d)）。
 	if len(m.Sources) == 0 {
 		return nil
 	}
