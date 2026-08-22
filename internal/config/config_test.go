@@ -356,3 +356,111 @@ proxy = "`+c.proxy+`"
 		})
 	}
 }
+
+// TestMusicSourcesDefault 验证：不写 sources 时回落到默认顺序、全部启用。
+// 现有部署的 myconfig.toml 没有这个字段，不能因为升级就起不来或悄悄关掉音源。
+func TestMusicSourcesDefault(t *testing.T) {
+	cfg, err := FromFile(writeTempTOML(t, musicTOML(`
+[music]
+webdav_user   = "alist"
+webdav_pass   = "pw"
+webdav_name_1 = "阿里云盘"
+webdav_url_1  = "http://alist:5244/dav/aliyun/Music"
+`)))
+	if err != nil {
+		t.Fatalf("FromFile 意外报错: %v", err)
+	}
+	got := cfg.Music.EffectiveSources()
+	if len(got) != len(DefaultMusicSources) {
+		t.Fatalf("EffectiveSources() = %v, want %v", got, DefaultMusicSources)
+	}
+	for i := range got {
+		if got[i] != DefaultMusicSources[i] {
+			t.Fatalf("EffectiveSources() = %v, want %v", got, DefaultMusicSources)
+		}
+	}
+}
+
+// TestMusicSourcesOrderPreserved 验证：数组顺序被原样保留 —— 顺序就是优先级。
+func TestMusicSourcesOrderPreserved(t *testing.T) {
+	cfg, err := FromFile(writeTempTOML(t, musicTOML(`
+[music]
+webdav_user   = "alist"
+webdav_pass   = "pw"
+webdav_name_1 = "阿里云盘"
+webdav_url_1  = "http://alist:5244/dav/aliyun/Music"
+sources       = ["mp3pm", "musicso"]
+`)))
+	if err != nil {
+		t.Fatalf("FromFile 意外报错: %v", err)
+	}
+	got := cfg.Music.EffectiveSources()
+	if len(got) != 2 || got[0] != "mp3pm" || got[1] != "musicso" {
+		t.Fatalf("EffectiveSources() = %v, want [mp3pm musicso]", got)
+	}
+}
+
+// TestMusicSourcesSubset 验证：只列一个 = 只启用一个，其余关闭。
+func TestMusicSourcesSubset(t *testing.T) {
+	cfg, err := FromFile(writeTempTOML(t, musicTOML(`
+[music]
+webdav_user   = "alist"
+webdav_pass   = "pw"
+webdav_name_1 = "阿里云盘"
+webdav_url_1  = "http://alist:5244/dav/aliyun/Music"
+sources       = ["musicso"]
+`)))
+	if err != nil {
+		t.Fatalf("FromFile 意外报错: %v", err)
+	}
+	if got := cfg.Music.EffectiveSources(); len(got) != 1 || got[0] != "musicso" {
+		t.Fatalf("EffectiveSources() = %v, want [musicso]", got)
+	}
+}
+
+// TestMusicSourcesInvalid 锁死所有应当启动失败的 sources 写法。
+func TestMusicSourcesInvalid(t *testing.T) {
+	const creds = `
+webdav_user   = "alist"
+webdav_pass   = "pw"
+webdav_name_1 = "阿里云盘"
+webdav_url_1  = "http://alist:5244/dav/aliyun/Music"
+`
+	cases := []struct {
+		name    string
+		sources string
+	}{
+		{"未知音源名", `sources = ["musicso", "spotify"]`},
+		{"重复项", `sources = ["musicso", "musicso"]`},
+		{"显式空数组", `sources = []`},
+		{"空串元素", `sources = ["musicso", ""]`},
+		{"纯空格元素", `sources = ["musicso", "   "]`},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			_, err := FromFile(writeTempTOML(t, musicTOML("\n[music]"+creds+c.sources+"\n")))
+			if err == nil {
+				t.Fatal("该 sources 写法应当导致启动失败，却成功了")
+			}
+			if !strings.Contains(err.Error(), "sources") {
+				t.Errorf("错误信息应提到 sources，实际: %v", err)
+			}
+		})
+	}
+}
+
+// TestMusicSourcesAloneStillValidates 验证：只写了 sources、webdav 全忘时也要报错。
+//
+// 这条守的是 touched 判定必须覆盖 sources。否则这份配置会被判成
+// "整段没配"而静默放行，管理员拿到一个看似正常启动、
+// 实则 /music 悄悄不可用的进程。
+func TestMusicSourcesAloneStillValidates(t *testing.T) {
+	_, err := FromFile(writeTempTOML(t, musicTOML(`
+[music]
+sources = ["musicso"]
+`)))
+	if err == nil {
+		t.Fatal("只写 sources 而 webdav 全空时应当启动失败")
+	}
+}

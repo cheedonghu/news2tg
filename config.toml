@@ -65,8 +65,16 @@ webdav_user   = ""
 webdav_pass   = ""
 webdav_name_1 = ""
 webdav_url_1  = ""
+# 第二个目标可留空：至少配一个完整目标（name + url）即可。
+# 但不要只填一半 —— 有 name 没 url 会直接启动失败。
 webdav_name_2 = ""
 webdav_url_2  = ""
+# 启用的音源，**顺序即优先级**（模型按这个顺序依次尝试，前一个没结果再换下一个）。
+# 不在列表里 = 关闭。整行删掉 = 全部启用，顺序同下。
+#   musicso —— 中文站，聚合 QQ 音乐与网易云，歌名歌手是中文原名，中文歌首选
+#   mp3pm   —— 俄语站，中文歌按拼音收录，作为兜底
+# 不要写成空数组 sources = []：那会关掉所有音源，启动时会直接报错。
+sources = ["musicso", "mp3pm"]
 
 # 全局 HTTP 代理。留空 = 全部直连（默认，与不写这一段等价）。
 # 非空时对所有出站请求生效：Telegram、DeepSeek、V2EX、HN、音源、WebDAV 一视同仁。

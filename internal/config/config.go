@@ -5,6 +5,7 @@ import (
 	"flag"     // Go 标准库的命令行参数解析（轻量，不像 Cobra 那么重）
 	"fmt"      // 新增：错误包装
 	"net/url"  // 新增：校验 [network] proxy 地址
+	"sort"     // 新增：sources 校验报错信息里给合法音源名排序
 	"strconv"  // 新增：字符串转 int64
 	"strings"  // 新增：按冒号分割 / TrimSpace
 
@@ -125,6 +126,85 @@ type Music struct {
 	WebdavURL1  string `toml:"webdav_url_1"`
 	WebdavName2 string `toml:"webdav_name_2"`
 	WebdavURL2  string `toml:"webdav_url_2"`
+	// Sources 是启用的音源列表，**顺序即优先级**（模型按这个顺序依次尝试）。
+	// 不在列表里 = 关闭。缺省（不写这一行）= DefaultMusicSources 全部启用。
+	//
+	// 为什么用一个有序数组而不是"开关字段 + 优先级字段"：
+	// 一个字段同时表达两件事，就不可能出现"开了但没给优先级"
+	// 或"两个源抢同一个优先级"这种自相矛盾的配置。
+	Sources []string `toml:"sources"`
+}
+
+// DefaultMusicSources 是不写 sources 时的默认启用列表，顺序即优先级。
+//
+// musicso 排在前面：它是中文站、歌名歌手都是中文原名，覆盖中文歌远好于
+// mp3.pm（俄语站，中文歌按拼音收录，得靠模型猜拼音才搜得到）。
+// mp3.pm 留作兜底：musicso 在 Cloudflare 后面，出口 IP 被判成机器人时会整体不可用。
+var DefaultMusicSources = []string{"musicso", "mp3pm"}
+
+// knownMusicSources 是所有合法的音源名。
+// 用 map 而不是切片：校验时要按名字查，O(1) 比线性扫直观。
+// 加音源时改这里和 DefaultMusicSources 两处，以及 main 里的工厂表。
+var knownMusicSources = map[string]bool{
+	"musicso": true,
+	"mp3pm":   true,
+}
+
+// EffectiveSources 返回实际生效的音源列表。
+//
+// 缺省（长度为 0）时回落到默认全启用 —— 注意这里不会返回空列表：
+// 显式写 sources = [] 已经在 validate() 里变成启动失败了，
+// 所以能走到这儿的空值只可能是"根本没写这一行"。
+//
+// 返回副本而不是内部切片：调用方（main）拿去构造音源时不该有能力
+// 改到配置本身。append(nil, s...) 是 Go 里拷贝切片的惯用写法。
+func (m Music) EffectiveSources() []string {
+	if len(m.Sources) == 0 {
+		return append([]string(nil), DefaultMusicSources...)
+	}
+	return append([]string(nil), m.Sources...)
+}
+
+// validateSources 校验 sources 数组。
+// 只在 [music] 段确实在用时才被调用（见 validate）。
+func (m Music) validateSources() []string {
+	// 完全没写这一行 → 走默认，没什么可校验的。
+	// 注意 TOML 里 sources = [] 解析出来同样是长度 0 的切片，与"没写"无法区分，
+	// 所以那个 case 由 rawSourcesPresent 单独兜（见 validate 的调用处）。
+	if len(m.Sources) == 0 {
+		return nil
+	}
+	var problems []string
+	seen := make(map[string]bool, len(m.Sources))
+	for i, s := range m.Sources {
+		name := strings.TrimSpace(s)
+		if name == "" {
+			problems = append(problems, fmt.Sprintf("sources 第 %d 项是空值", i+1))
+			continue
+		}
+		if !knownMusicSources[name] {
+			problems = append(problems, fmt.Sprintf("sources 里的 %q 不是已知音源（可选：%s）",
+				name, strings.Join(sortedKnownSources(), ", ")))
+			continue
+		}
+		if seen[name] {
+			problems = append(problems, fmt.Sprintf("sources 里的 %q 重复出现", name))
+			continue
+		}
+		seen[name] = true
+	}
+	return problems
+}
+
+// sortedKnownSources 返回排好序的合法音源名，仅用于拼错误信息。
+// 必须排序：map 遍历顺序是随机的，不排的话同一个错误每次报出来顺序都不同。
+func sortedKnownSources() []string {
+	out := make([]string, 0, len(knownMusicSources))
+	for k := range knownMusicSources {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // fields 把六个字段收成一张「配置项名 → 值」表，供 touched 判定共用，
@@ -219,6 +299,12 @@ func (m Music) validate() error {
 			break
 		}
 	}
+	// sources 也算"碰过这一段"。不加这条的话，"只写了 sources、webdav 全忘"
+	// 会被判成整段没配而静默放行，管理员拿到一个看似正常启动、
+	// 实则 /music 悄悄不可用的进程。
+	if len(m.Sources) > 0 {
+		anyTouched = true
+	}
 	if !anyTouched {
 		return nil // 整段没配，功能关闭
 	}
@@ -245,6 +331,8 @@ func (m Music) validate() error {
 		problems = append(problems, "至少需要一个完整的上传目标（name + url）")
 	}
 
+	problems = append(problems, m.validateSources()...)
+
 	if len(problems) == 0 {
 		return nil
 	}
@@ -269,8 +357,10 @@ type Config struct {
 func FromFile(path string) (*Config, error) {
 	var cfg Config // 零值结构体；所有字段默认零值
 	// toml.DecodeFile：第二个参数必须是指针（&cfg），库才能写入。
-	// 第一个返回值是 MetaData（哪些 key 被识别等），这里用 _ 丢弃。
-	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+	// 第一个返回值是 MetaData（哪些 key 被识别等），这里接出来给下面 sources 用：
+	// 要区分"写了 sources = []"和"根本没写 sources"，只能靠它。
+	md, err := toml.DecodeFile(path, &cfg)
+	if err != nil {
 		return nil, err
 	}
 	// 模型名故意不在 Go 代码里留兜底默认值：缺配置就启动失败，
@@ -296,6 +386,14 @@ func FromFile(path string) (*Config, error) {
 		if perr != nil || u.Scheme == "" || u.Host == "" {
 			return nil, fmt.Errorf("[network] proxy 不是合法的代理地址（需形如 http://host:port 或 socks5://host:port）: %q", cfg.Network.Proxy)
 		}
+	}
+	// md.IsDefined 能区分"写了 sources = []"和"根本没写 sources" ——
+	// 前者是显式关掉所有音源，那样 /music 必然什么都搜不到，
+	// 属于关错了地方，应当启动失败而不是留个残废功能给人用。
+	if md.IsDefined("music", "sources") && len(cfg.Music.Sources) == 0 {
+		return nil, fmt.Errorf("[music] sources 是空数组：这会关掉所有音源、让 /music 必然搜不到东西。"+
+			"若要关闭 /music 请整个删掉 [music] 段；若要启用音源请列出：%s",
+			strings.Join(sortedKnownSources(), ", "))
 	}
 	// [music] 是可选功能：全空则 /music 不可用，但不阻止启动；
 	// 填一半则报错 —— 半配置状态一定是打字漏了。

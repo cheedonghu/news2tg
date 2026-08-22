@@ -209,8 +209,27 @@ func main() {
 	// 声明成接口类型、只在配置齐全时赋值，就能避开这个坑。
 	var musicRunner command.MusicRunner
 	if cfg.Music.Configured() {
-		// 音源列表：目前只有 mp3.pm，加新源就在这里多塞一个实现。
-		sources := []music.Source{music.NewMp3PM(httpClient)}
+		// 音源工厂表：名字 → 怎么造。加音源时在这里多一项，
+		// 同时在 config 的 knownMusicSources / DefaultMusicSources 里登记。
+		// 用工厂函数而不是直接建实例：没被启用的音源不必白白构造。
+		musicSourceFactory := map[string]func() music.Source{
+			"musicso": func() music.Source { return music.NewMusicSo(httpClient) },
+			"mp3pm":   func() music.Source { return music.NewMp3PM(httpClient) },
+		}
+		// 按配置顺序构造 —— 这个切片的顺序会一路传到系统提示词里，
+		// 成为模型"先试哪个源"的依据，所以顺序本身就是配置语义。
+		enabled := cfg.Music.EffectiveSources()
+		sources := make([]music.Source, 0, len(enabled))
+		for _, name := range enabled {
+			// 配置校验已经保证每个名字都在工厂表里，这里的 ok 判断
+			// 只为防止将来改动时两处失配（漏了在工厂表登记新音源）。
+			newSource, ok := musicSourceFactory[name]
+			if !ok {
+				slog.Error("音源已在配置中启用但没有对应实现，请检查 main 里的工厂表", "source", name)
+				os.Exit(1)
+			}
+			sources = append(sources, newSource())
+		}
 		// 复用 DeepSeek 的 key 和 agent_model（同样需要 function calling 能力）。
 		musicAgent := music.NewAgent(cfg.DeepSeek.APIToken, cfg.DeepSeek.AgentModel, sources)
 		// 上传目标：只收**完整**的那些。
@@ -227,7 +246,7 @@ func main() {
 		uploader := music.NewUploader(httpClient, targets, cfg.Music.WebdavUser, cfg.Music.WebdavPass)
 		// tgClient 同时是 notify.Notifier 和 notify.Editor，这里用的是后者。
 		musicRunner = music.NewRunner(musicAgent, uploader, tgClient)
-		slog.Info("音乐功能已启用", "targets", len(targets))
+		slog.Info("音乐功能已启用", "targets", len(targets), "sources", enabled)
 	} else {
 		slog.Warn("[music] 未配置，/music 指令不可用")
 	}
