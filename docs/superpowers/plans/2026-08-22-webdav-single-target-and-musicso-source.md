@@ -151,22 +151,32 @@ Expected: 三个测试全 PASS
 
 - [ ] **Step 5: 在 main 里落地代理**
 
-在 `cmd/news2tg/main.go` 里，把第 105 行的 `httpClient := &http.Client{` 那一整块**替换**为：
+**⚠️ 代理必须在 `notify.NewTelegram` 之前装上。** 这段代码分两处落地。
+
+**(a)** 在 `cmd/news2tg/main.go` 的 **`// 4) 初始化 Telegram 客户端` 那两句注释之前**插入：
 
 ```go
-	// 8) 全局代理：非空时对**所有** HTTP 出站生效。
+	// 3.5) 全局代理：非空时对**所有** HTTP 出站生效。
 	//
-	// 为什么只需要动这两处、不必改任何构造函数签名：
+	// 为什么只需要动两处、不必改任何构造函数签名：
 	// 仓库里一共六个 HTTP 客户端构造点，其中五个（notify.Telegram 的
 	// &http.Client{Timeout: 30s}、tgbotapi.NewBotAPI 内部的 &http.Client{}、
 	// go-openai DefaultConfig 的 &http.Client{} ×3）Transport 字段都是 nil，
 	// net/http 会自动回落到 http.DefaultTransport —— 覆盖它就等于同时改到那五个。
-	// 剩下的第六个就是下面这个共享 client，它自带显式 Transport，
-	// 不吃 DefaultTransport，所以要单独把 Proxy 设一遍。
+	// 剩下的第六个是下面第 8 步那个共享 client，它自带显式 Transport，
+	// 不吃 DefaultTransport，所以要用同一个 proxyFunc 再单独设一遍。
 	//
-	// 注意这段必须跑在任何客户端被构造**之前**。tgClient 在第 4 步就建好了，
-	// 但 tgbotapi 只是把 *http.Client 存下来、每次请求才现取 Transport，
-	// 所以在这里改仍然对它生效。
+	// ★ 这段为什么必须放在这里、绝不能往后挪：
+	// tgbotapi 是**构造即请求** —— NewBotAPIWithClient(bot.go:55-73) 在返回前
+	// 就同步调了一次 GetMe() 校验 token，而 notify.NewTelegram 走的正是这条路径。
+	// 紧接着第 7 步的启动通知又是一次真实请求。这两次都发生在客户端"第一次
+	// 业务调用"之前，所以"等用到时再装代理"根本来不及。
+	// 一旦装晚了，后果不是降级而是起不来：代理若正是访问 Telegram 的唯一途径，
+	// GetMe() 直连失败 → NewTelegram 报错 → main 直接 os.Exit(1)，
+	// 明明配了个完全可用的代理，进程反而挂了。
+	//
+	// 另外：这行改的是**包级全局可变状态**，之所以安全，是因为它跑在所有
+	// goroutine 启动之前。调整启动顺序时务必保住这个前提。
 	var proxyFunc func(*http.Request) (*url.URL, error) // nil = 不走代理
 	if p := strings.TrimSpace(cfg.Network.Proxy); p != "" {
 		// 这里可以忽略 error：FromFile 已经校验过一遍，走到这儿必定合法。
@@ -177,8 +187,12 @@ Expected: 三个测试全 PASS
 		http.DefaultTransport.(*http.Transport).Proxy = proxyFunc
 		slog.Info("全局 HTTP 代理已启用", "proxy", p)
 	}
+```
 
-	// 8.1) 共享 HTTP 客户端：连接池、超时配置全集中在这里。
+**(b)** 把第 105 行的 `httpClient := &http.Client{` 那一整块替换为（复用上面算好的 `proxyFunc`）：
+
+```go
+	// 8) 共享 HTTP 客户端：连接池、超时配置全集中在这里。
 	// &http.Client{...} 取地址：拿到 *http.Client 指针，方便共享同一个连接池。
 	httpClient := &http.Client{
 		//Timeout: 5 * time.Minute, // 整个请求总超时
