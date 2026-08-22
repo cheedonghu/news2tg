@@ -52,3 +52,18 @@ api_token="key"
 # 留空会导致启动失败——代码里没有默认值。
 [storage]
 db_path = "/data/news2tg.db"
+
+# /music 指令的 WebDAV 上传目标与凭据（alist 挂载的网盘，通过 WebDAV 统一接管上传）。
+#
+# 这一段是**可选**的：六项全空 → /music 不注册到命令清单、收到也只回一句未配置，
+# 不影响程序启动。但**填一半会直接启动失败**——半配置一定是打字漏了。
+#
+# ⚠️ 真实凭据只写在 myconfig.toml（已 gitignore），不要填进这个模板文件：
+# 本文件是被 git 跟踪的，仓库又是公开的。
+[music]
+webdav_user   = ""
+webdav_pass   = ""
+webdav_name_1 = ""
+webdav_url_1  = ""
+webdav_name_2 = ""
+webdav_url_2  = ""

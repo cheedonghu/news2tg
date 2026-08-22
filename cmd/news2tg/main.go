@@ -23,6 +23,7 @@ import (
 	"github.com/cheedonghu/news2tg/internal/digest"
 	"github.com/cheedonghu/news2tg/internal/logx"
 	"github.com/cheedonghu/news2tg/internal/monitor"
+	"github.com/cheedonghu/news2tg/internal/music"
 	"github.com/cheedonghu/news2tg/internal/notify"
 	"github.com/cheedonghu/news2tg/internal/store"
 )
@@ -153,8 +154,37 @@ func main() {
 	// aiClient 已实现 Advise，天然满足 monitor.Advisor。
 	weatherMon := monitor.NewWeather(httpClient, tgClient, aiClient, mentions)
 
-	// 9.3) 命令 bot：收 /summary <网址>，调 agent 总结后推送到频道（tgClient）。
-	cmdBot, err := command.NewBot(cfg.Telegram.APIToken, summaryAgent, tgClient, adminIDs)
+	// 9.2.2) 音乐 agent：/music 指令用。
+	//
+	// ★ 关键陷阱：musicRunner 必须声明为**接口类型** command.MusicRunner，
+	// 不能声明成 *music.Runner 再传进去。
+	// 原因：Go 里"值为 nil 的具体类型指针"塞进接口变量后，接口本身不是 nil
+	// （接口 = 类型 + 值，类型那格非空）。若写成 var mr *music.Runner 然后
+	// 在 [music] 未配置时把这个 nil 指针传给 NewBot，command 包里的
+	// `b.music == nil` 判断会为 false，/music 会被当成"已配置"，
+	// 真跑起来直接 nil 指针解引用 panic。
+	// 声明成接口类型、只在配置齐全时赋值，就能避开这个坑。
+	var musicRunner command.MusicRunner
+	if cfg.Music.Configured() {
+		// 音源列表：目前只有 mp3.pm，加新源就在这里多塞一个实现。
+		sources := []music.Source{music.NewMp3PM(httpClient)}
+		// 复用 DeepSeek 的 key 和 agent_model（同样需要 function calling 能力）。
+		musicAgent := music.NewAgent(cfg.DeepSeek.APIToken, cfg.DeepSeek.AgentModel, sources)
+		// 两个固定目标；Uploader 内部按切片循环，加第三个网盘只需在这里多一项。
+		targets := []music.Target{
+			{Name: cfg.Music.WebdavName1, URL: cfg.Music.WebdavURL1},
+			{Name: cfg.Music.WebdavName2, URL: cfg.Music.WebdavURL2},
+		}
+		uploader := music.NewUploader(httpClient, targets, cfg.Music.WebdavUser, cfg.Music.WebdavPass)
+		// tgClient 同时是 notify.Notifier 和 notify.Editor，这里用的是后者。
+		musicRunner = music.NewRunner(musicAgent, uploader, tgClient)
+		slog.Info("音乐功能已启用", "targets", len(targets))
+	} else {
+		slog.Warn("[music] 未配置，/music 指令不可用")
+	}
+
+	// 9.3) 命令 bot：收 /summary <网址> 和 /music <歌曲描述>。
+	cmdBot, err := command.NewBot(cfg.Telegram.APIToken, summaryAgent, tgClient, adminIDs, musicRunner)
 	if err != nil {
 		slog.Error("failed to init command bot", "err", err)
 		os.Exit(1)
