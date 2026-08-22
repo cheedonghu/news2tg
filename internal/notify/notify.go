@@ -30,3 +30,21 @@ type Notifier interface {
 	NotifyTo(ctx context.Context, chatID int64, content string) error
 	NotifyMarkdown(ctx context.Context, content string) error
 }
+
+// Editor 是"可原地编辑的消息通道"。
+//
+// 为什么不并进 Notifier？
+// Notifier 的语义是"发出去就不管了"，monitor 那些只推不改的调用方压根不需要 msgID；
+// 把编辑方法塞进去会逼它们全都认识这个概念。分成两个接口后，
+// 只有真正要改消息的调用方（music 的进度上报）才依赖 Editor。
+//
+// 转义约定：与 NotifyMarkdown 一致 —— md 是**已渲染好的 MarkdownV2**，
+// 实现不做整体转义，调用方自己转义动态片段。
+//
+// 限速：由实现内部保证（与 Notifier 共用同一把全局节流锁）。
+type Editor interface {
+	// SendEditable 发一条新消息，返回它的 message id，供后续 Edit 使用。
+	SendEditable(ctx context.Context, chatID int64, md string) (msgID int, err error)
+	// Edit 用新内容覆盖已有消息。
+	Edit(ctx context.Context, chatID int64, msgID int, md string) error
+}

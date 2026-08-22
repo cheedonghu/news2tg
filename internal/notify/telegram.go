@@ -15,6 +15,13 @@ import (
 	"github.com/cheedonghu/news2tg/internal/tools"
 )
 
+// 编译期断言：*Telegram 必须同时满足 Notifier 和 Editor。
+// 写成 var _ = 形式不占运行时开销，接口漏实现会在编译阶段就报错。
+var (
+	_ Notifier = (*Telegram)(nil)
+	_ Editor   = (*Telegram)(nil)
+)
+
 // sendInterval 是任意两次发送之间的最小间隔，用来躲开 Telegram 的频率限制。
 const sendInterval = 1500 * time.Millisecond
 
@@ -53,17 +60,20 @@ func (t *Telegram) Notify(ctx context.Context, content string) error {
 	return t.NotifyTo(ctx, t.chatID, content)
 }
 
-// send 是所有发送路径的唯一出口：先取得限速许可，再真正发。
+// sendRaw 是所有发送/编辑路径的唯一出口：先取得限速许可，再真正发，
+// 返回 Telegram 回传的消息（SendEditable 需要里面的 MessageID）。
+//
+// 参数类型从 MessageConfig 放宽到 Chattable：编辑消息用的
+// EditMessageTextConfig 也满足 Chattable，这样发送和编辑共用同一把节流锁。
 //
 // 整个方法持有 mu，所以发送是全局串行的 —— 这正是想要的：
 // Telegram 的限额是按 bot 算的，不是按调用点算的。
-// 代价是 HN 推 20 条期间，/summary 的回复会排队等待。
-func (t *Telegram) send(ctx context.Context, msg tgbotapi.MessageConfig) error {
+func (t *Telegram) sendRaw(ctx context.Context, c tgbotapi.Chattable) (tgbotapi.Message, error) {
 	// 先看 ctx 是否已取消：bot.Send 不接受 ctx，一旦进去就拦不住了。
 	// 这个检查必须在抢锁之前，也必须独立于下面的限速等待 ——
 	// 距上次发送超过 sendInterval 时不会进入等待分支，那条路径同样需要被 ctx 拦住。
 	if err := ctx.Err(); err != nil {
-		return err
+		return tgbotapi.Message{}, err
 	}
 
 	t.mu.Lock()
@@ -76,18 +86,25 @@ func (t *Telegram) send(ctx context.Context, msg tgbotapi.MessageConfig) error {
 		defer timer.Stop() // 提前返回时释放 timer，避免泄漏
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return tgbotapi.Message{}, ctx.Err()
 		case <-timer.C:
 		}
 	}
 
-	_, err := t.bot.Send(msg)
+	sent, err := t.bot.Send(c)
 	// 无论成功失败都更新时间戳：失败往往也是被服务端限速了，更该等。
 	t.lastSend = time.Now()
 	if err != nil {
-		return fmt.Errorf("telegram 消息推送失败: %w", err)
+		return tgbotapi.Message{}, fmt.Errorf("telegram 消息推送失败: %w", err)
 	}
-	return nil
+	return sent, nil
+}
+
+// send 保留原签名，给只关心成败、不需要 MessageID 的调用方用
+// （NotifyTo / NotifyMarkdown）。这样这次改造对它们零影响。
+func (t *Telegram) send(ctx context.Context, msg tgbotapi.MessageConfig) error {
+	_, err := t.sendRaw(ctx, msg)
+	return err
 }
 
 // NotifyTo 发一条消息到指定 chatID（如回复发指令的用户）。
@@ -113,6 +130,36 @@ func (t *Telegram) NotifyMarkdown(ctx context.Context, content string) error {
 	msg.DisableWebPagePreview = false
 	if err := t.send(ctx, msg); err != nil {
 		slog.ErrorContext(ctx, "telegram预渲染消息推送失败", "err", err)
+		return err
+	}
+	return nil
+}
+
+// SendEditable 发一条**已渲染好的 MarkdownV2** 消息并返回它的 message id。
+// 与 NotifyMarkdown 的区别只有两点：可指定 chatID、会把 message id 交回调用方。
+// 关掉链接预览：进度消息会被反复编辑，预览卡片跟着闪很吵。
+func (t *Telegram) SendEditable(ctx context.Context, chatID int64, md string) (int, error) {
+	msg := tgbotapi.NewMessage(chatID, md)
+	msg.ParseMode = tgbotapi.ModeMarkdownV2
+	msg.DisableWebPagePreview = true
+	sent, err := t.sendRaw(ctx, msg)
+	if err != nil {
+		slog.ErrorContext(ctx, "telegram 可编辑消息发送失败", "chat", chatID, "err", err)
+		return 0, err
+	}
+	return sent.MessageID, nil
+}
+
+// Edit 用新内容覆盖已有消息。md 同样是已渲染好的 MarkdownV2。
+//
+// 注意：Telegram 对"内容完全没变"的编辑会返回
+// "message is not modified" 错误。调用方（music 的 Reporter）靠覆盖式快照
+// 天然不会连发两条一模一样的内容，所以这里不做特殊处理，如实把错误返回。
+func (t *Telegram) Edit(ctx context.Context, chatID int64, msgID int, md string) error {
+	e := tgbotapi.NewEditMessageText(chatID, msgID, md)
+	e.ParseMode = tgbotapi.ModeMarkdownV2
+	if _, err := t.sendRaw(ctx, e); err != nil {
+		slog.ErrorContext(ctx, "telegram 编辑消息失败", "chat", chatID, "msg", msgID, "err", err)
 		return err
 	}
 	return nil
