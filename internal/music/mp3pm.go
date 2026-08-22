@@ -21,9 +21,11 @@ const (
 	// mp3pmSearchAPI 是站点前端 Angular 用的搜索接口（form-encoded POST）。
 	// 它不返回 JSON，返回的是**一行纯文本结果页 URL**。
 	mp3pmSearchAPI = "https://mp3.pm/public/api.search.php"
-	// browserUA：站点对默认的 Go-http-client UA 不友好，伪装成浏览器更稳。
-	browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
+
+// browserUA 定义在 source.go（而不是这里）：mp3.pm 和 musicso.cc 两个站点
+// 都对默认的 Go-http-client UA 不友好（前者搜索/下载会被针对，后者直接被
+// Cloudflare 质询拦下），这不是某一个站的特有逻辑，是两个实现共享的常量。
 
 // 编译期断言：*Mp3PM 必须满足 Source。接口漏实现会在编译阶段就报错。
 var _ Source = (*Mp3PM)(nil)

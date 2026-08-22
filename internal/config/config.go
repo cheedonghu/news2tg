@@ -232,9 +232,9 @@ func (m Music) fields() []struct {
 type targetState int
 
 const (
-	targetEmpty      targetState = iota // name 和 url 都是空白 —— 该目标没配，合法
-	targetComplete                      // name 和 url 都有可用值 —— 该目标可用
-	targetHalfBaked                     // 只有一项有值 —— 一定是打字漏了，必须报错
+	targetEmpty     targetState = iota // name 和 url 都是空白 —— 该目标没配，合法
+	targetComplete                     // name 和 url 都有可用值 —— 该目标可用
+	targetHalfBaked                    // 只有一项有值 —— 一定是打字漏了，必须报错
 )
 
 // classifyTarget 判定一个目标的三态。

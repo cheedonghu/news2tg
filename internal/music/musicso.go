@@ -147,8 +147,11 @@ func musicSoChallenge(ctx context.Context, resp *http.Response, body string) err
 	ray := resp.Header.Get("cf-ray")
 	slog.ErrorContext(ctx, "musicso 被 Cloudflare 拦截",
 		"status", resp.StatusCode, "cf-mitigated", mitigated, "cf-ray", ray)
+	// %w 包一层 errSourceUnavailable：这是站点整体拒绝服务，换关键词毫无
+	// 意义，agent.go 的 doSearch 靠 errors.Is 认出这个哨兵，把回灌文案
+	// 从"换个关键词再试"改成"换个音源"，别让模型在这条死路上空转。
 	return fmt.Errorf("musicso 被 Cloudflare 拦截（bot 质询，cf-ray=%s）；"+
-		"该出口 IP 已被判定为机器人，需要更换出口或配置 [network] proxy", ray)
+		"该出口 IP 已被判定为机器人，需要更换出口或配置 [network] proxy: %w", ray, errSourceUnavailable)
 }
 
 // parseMusicSoResults 从搜索结果页 HTML 里抽出候选列表。

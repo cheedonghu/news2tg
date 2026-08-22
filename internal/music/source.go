@@ -23,6 +23,16 @@ import (
 	"io"
 )
 
+// browserUA 是发给各音源站点的统一 User-Agent。
+//
+// 定义在这个共享文件而不是某个具体音源文件里，是因为它不是"站点特有逻辑"：
+// mp3.pm 和 musicso.cc 两个站都对默认的 Go-http-client UA 不友好——前者的
+// 搜索/下载接口会被针对，后者直接被 Cloudflare 当机器人质询拦下。伪装成
+// 浏览器是两个实现都要做的同一件事，放进各自文件里只会造成重复定义或者
+// 一个文件引用另一个文件的常量，跟包顶部"站点特有逻辑只允许待在各自的
+// 音源文件里"的约定自相矛盾。
+const browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
 // Candidate 是一条搜索结果。
 //
 // dlURL 小写 = 包外不可见。这是刻意的：那个直链带一长串 token（200+ 字符），
