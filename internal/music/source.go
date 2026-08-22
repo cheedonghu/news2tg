@@ -4,12 +4,18 @@
 //
 // 包内分工：
 //
-//	source.go  音源的统一形状（扩展点），无任何站点逻辑
-//	mp3pm.go   Source 的 mp3.pm 实现，唯一含站点特有逻辑的文件
-//	agent.go   LLM 工具调用循环
-//	upload.go  WebDAV 并发上传
-//	report.go  进度快照与上报
-//	runner.go  把上面几件事串起来的编排层
+//	source.go   音源的统一形状（扩展点），无任何站点逻辑
+//	mp3pm.go    Source 的 mp3.pm 实现，俄语站，中文歌按拼音收录
+//	musicso.go  Source 的 musicso.cc 实现，中文站，聚合 QQ 音乐与网易云
+//	agent.go    LLM 工具调用循环
+//	upload.go   WebDAV 并发上传
+//	report.go   进度快照与上报
+//	runner.go   把上面几件事串起来的编排层
+//
+// 约定：站点特有逻辑（HTML 结构、接口形状、cookie/UA 这类反爬细节……）只允许
+// 待在各自的音源文件里，一个音源一个文件、一套解析逻辑；agent.go / runner.go
+// 只认 Source 接口，不能出现任何具体站点的痕迹。这样加音源是"多一个文件"，
+// 不是"改一遍已有代码"——上面两个实现互不感知对方的存在就是证据。
 package music
 
 import (
