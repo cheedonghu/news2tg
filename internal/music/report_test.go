@@ -573,3 +573,43 @@ func TestReporterConcurrentUpdatesCoalesce(t *testing.T) {
 		fe.mu.Unlock()
 	}
 }
+
+// TestRenderStatusEmptyDuration 验证：音源不提供时长时，曲目行不留下孤零零的分隔点。
+//
+// musicso.cc 不返回时长，Duration 恒为空串。原先的写法是
+// fmt.Sprintf("%s - %s · %s", Artist, Title, Duration)，会渲染成
+// "周杰伦 - 晴天 · " —— 行尾挂一个没有下文的分隔符，看起来像渲染坏了。
+// Bytes 和 Source 两段本来就是"有才拼"的写法，这里只是把漏掉的一处补齐。
+func TestRenderStatusEmptyDuration(t *testing.T) {
+	md := renderStatus(Status{
+		Query: "晴天",
+		Stage: StageDownloading,
+		Track: &Track{Artist: "周杰伦", Title: "晴天", Duration: "", Source: "musicso"},
+	})
+
+	// 转义后的分隔点后面必须还有内容（这里是 source），不能是行尾。
+	for _, bad := range []string{"· \n", "·\n", "· $"} {
+		if strings.Contains(md, bad) {
+			t.Errorf("时长为空时渲染出了悬空的分隔点 %q:\n%s", bad, md)
+		}
+	}
+	// 正常内容仍要在。
+	for _, want := range []string{"周杰伦", "晴天", "musicso"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("渲染结果里缺少 %q\n实际:\n%s", want, md)
+		}
+	}
+}
+
+// TestRenderStatusKeepsDurationWhenPresent 守住回归：有时长时照旧显示。
+// 光测"空的时候不显示"是不够的 —— 一个永远不拼时长的实现也能让上面那条通过。
+func TestRenderStatusKeepsDurationWhenPresent(t *testing.T) {
+	md := renderStatus(Status{
+		Query: "晴天",
+		Stage: StageDownloading,
+		Track: &Track{Artist: "周杰伦", Title: "晴天", Duration: "04:29", Source: "mp3pm"},
+	})
+	if !strings.Contains(md, "04:29") {
+		t.Errorf("有时长时应当显示出来:\n%s", md)
+	}
+}

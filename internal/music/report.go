@@ -373,7 +373,13 @@ func renderStatus(s Status) string {
 
 	// 曲目行：选定后就有（此时 Bytes 可能还是 0，下载完才有值）。
 	if s.Track != nil {
-		line := fmt.Sprintf("%s - %s · %s", s.Track.Artist, s.Track.Title, s.Track.Duration)
+		line := fmt.Sprintf("%s - %s", s.Track.Artist, s.Track.Title)
+		// 时长是"有才拼"：musicso 这类音源不提供时长，硬拼会在行尾留下一个
+		// 没有下文的 " · "，看起来像渲染坏了。下面 Bytes / Source 两段
+		// 本来就是这个写法，这里只是把漏掉的一处补齐。
+		if s.Track.Duration != "" {
+			line += fmt.Sprintf(" · %s", s.Track.Duration)
+		}
 		if s.Track.Bytes > 0 {
 			line += fmt.Sprintf(" · %s", humanSize(s.Track.Bytes))
 		}
