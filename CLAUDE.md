@@ -24,10 +24,12 @@ gofmt -l .                                    # list unformatted files
 
 Unit tests focus on pure/decision logic (no live bot or network): `internal/monitor/v2ex_test.go` (locks the OR filter behavior; also `TestFetchDedup`, an httptest + real temp SQLite file test of push dedup), `internal/monitor/deliver_test.go` (only marks a post pushed after the send succeeds), `internal/monitor/hackernews_test.go` (HN post title parsing), `internal/store/sqlite_test.go` (against a real temp DB file), `internal/command/bot_test.go` (`classify`), `internal/agent/agent_test.go`, `internal/logx/logx_test.go`, `internal/tools/markdown_test.go`, `internal/digest/jina_test.go`,
 `internal/music/*_test.go`（mp3.pm 的 HTML fixture 解析与 httptest 两跳搜索、
+musicso 的 HTML fixture 解析（含畸形条目跳过、歌名自带连字符）、httptest 三跳
+（搜索页下发会话 → `play.php` 校验会话 → CDN 不带 cookie）、Cloudflare 质询识别、
 agent 循环的全部分支（含换词重搜/下载失败改选/超 50MB/非 JSON 输出/id 不一致/未收敛）、
 WebDAV 假服务端的部分失败语义、文件名清洗、进度上报的节流合并与终态立即发出）。
 
-Requires Go ≥ 1.25 (`go.mod` pins `go 1.25.0`, pulled up by `modernc.org/sqlite`'s toolchain requirement; relies on the Go 1.22 loop-variable semantics, though some code still defensively shadows — see `cmd/news2tg/main.go:183`).
+Requires Go ≥ 1.25 (`go.mod` pins `go 1.25.0`, pulled up by `modernc.org/sqlite`'s toolchain requirement; relies on the Go 1.22 loop-variable semantics, though some code still defensively shadows — see `cmd/news2tg/main.go:281`).
 
 ## External runtime dependency
 
@@ -35,7 +37,7 @@ HN body extraction is **not** done in Go. It goes through the `digest.Fetcher` i
 
 ## Architecture
 
-`main.go` wires concrete implementations together, then runs each monitor as a goroutine under a single signal-cancellable `context.Context`. If any monitor returns a non-context error, `main` calls `cancel()` to bring all of them down together (`cmd/news2tg/main.go:193`).
+`main.go` wires concrete implementations together, then runs each monitor as a goroutine under a single signal-cancellable `context.Context`. If any monitor returns a non-context error, `main` calls `cancel()` to bring all of them down together (`cmd/news2tg/main.go:291`).
 
 The design is interface-based dependency injection — business code (`monitor`) depends only on interfaces, so swapping channels/providers means adding an implementation, not editing callers:
 
@@ -52,15 +54,21 @@ The design is interface-based dependency injection — business code (`monitor`)
 - **`agent`** (`internal/agent/agent.go`) — a URL→Chinese-summary LLM agent that uses DeepSeek **function calling** to pick between the two `digest.Fetcher`s (python preferred; jina on failure/poor content), then summarizes. Reuses the `cfg.DeepSeek.APIToken`; the model comes from `cfg.DeepSeek.AgentModel` (must be tool-calling capable — distinct from `ai.DeepSeek`'s `cfg.DeepSeek.Model`, which only needs plain text generation). No model name is hardcoded in Go. The LLM call is behind a small `chatCompleter` interface for testability. Wired into `main` and driven by the command bot. Appends a `本次消耗 tokens: N` footer (accumulated `usage.TotalTokens`) and slog-dumps the full `messages` transcript for audit before returning.
 - **`command.Bot`** (`internal/command/bot.go`) — the **receive** side of Telegram (the rest of the app only sends). Long-polls `getUpdates`; on `/summary <url>` from a whitelisted admin (`[telegram] admin_ids`) it calls the `agent` and pushes the summary to the configured channel via `notify.Notifier`, acking the requester. Holds its own `*tgbotapi.BotAPI` (the notify client never polls, so no getUpdates conflict). Decision logic is in the pure `classify` method (unit-tested without a live bot); depends on a local `Summarizer` interface, not the `agent` package directly.
 - **`music`** (`internal/music/`) — `/music <歌曲描述>` 背后的完整链路。`music.Source`
-  (`source.go`) 是音源扩展点（`Search`/`Download`），实现：`Mp3PM`（`mp3pm.go`，
-  HTML 解析，站点特有逻辑只在这一个文件里）。`music.Agent`（`agent.go`）用 DeepSeek
+  (`source.go`) 是音源扩展点（`Search`/`Download`），实现：`MusicSo`（`musicso.go`，
+  中文站，聚合 QQ 音乐与网易云）与 `Mp3PM`（`mp3pm.go`，俄语站兜底）；站点特有逻辑
+  只在各自那一个文件里。`music.Agent`（`agent.go`）用 DeepSeek
   **function calling** 为每个注册的 `Source` **自动生成** `search_<名>`/`download_<名>`
   两个工具，模型负责理解自由格式歌名、换关键词重搜（mp3.pm 的中文歌按拼音收录，
   搜中文常零结果）、避开 live/伴奏/翻唱，并在最后输出规范化的
   `{"artist","title","id"}` JSON 用于拼文件名。**上传不是工具**——目标固定、无需模型判断，
-  由 `music.Uploader`（`upload.go`）在 agent 返回后并发 PUT 到两个 WebDAV 目标，
-  至少一个成功即算成功。`music.Runner`（`runner.go`）串联三者并负责临时目录的建与删
-  （`defer os.RemoveAll`，成败都删）。复用 `cfg.DeepSeek.AgentModel`，不新增模型配置。
+  由 `music.Uploader`（`upload.go`）在 agent 返回后并发 PUT 到配置好的 WebDAV 目标，
+  至少一个成功即算成功。上传目标**至少一个、至多两个**；`Uploader` 内部按 `[]Target`
+  循环，只配一个和配两个走同一条代码路径。`musicso` 的下载需要搜索那一跳下发的
+  PHPSESSID，它跟着 `Candidate.dlCookie` 走而不是由音源持有共享状态 —— 否则并发的
+  两个 `/music` 会互相冲掉会话。该站在 Cloudflare 后面，所有请求必须带 `browserUA`；
+  撞上质询时返回**明确错误**而非零结果。`music.Runner`（`runner.go`）串联三者并负责
+  临时目录的建与删（`defer os.RemoveAll`，成败都删）。复用 `cfg.DeepSeek.AgentModel`，
+  不新增模型配置。
 - **`model`** (`internal/model/model.go`) — shared DTOs (`NotifyBase`, V2EX `Topic`/`Node`/`Member`), separated into its own package to avoid import cycles.
 - **`tools`** (`internal/tools/markdown.go`) — `EscapeMarkdownV2` (called inside `notify.Notify`/`NotifyTo` for plain-text sends, and by the monitors' markdown builders for the dynamic parts of `NotifyMarkdown` messages) and `TruncateUTF8` (rune-aware truncation; never slice strings by byte).
 
@@ -83,10 +91,22 @@ Monitors share a single `*http.Client` (one connection pool) created in `main`. 
 
 TOML (`internal/config/config.go`), mapped via struct tags. `[telegram]` (incl. `admin_ids` — the `/summary` command whitelist), `[features]` (per-source on/off switches + V2EX keyword/node filters + HN count/time-gap), `[deepseek]` (api key + `model` for `Summarize`/`Advise`, `agent_model` for the tool-calling agent — both **required**; `FromFile` rejects empty values so startup fails fast, and no model name is hardcoded in Go), `[jina]` (api key for the `agent`'s jina fallback fetcher). `[storage]`（`db_path`，推送记录 SQLite 文件路径，**必填** —— `FromFile` 拒绝空值，容器里对应 `docker-compose.yml` 挂载的 `./data:/data` 卷）。`chat_id` and each `admin_ids` entry are stored as strings and `ParseInt`'d in `main` to avoid TOML int issues. `config.toml` is the template; `myconfig.toml` is a local (gitignored-style) variant.
 
-`[music]`（`/music` 的 WebDAV 凭据与两个上传目标，六个平铺字段）是**可选段**，
-与其它段"缺配置即启动失败"的哲学不同：**六项全空 → `/music` 不可用但程序正常启动**
-（现有部署没有这一段，不能因升级就起不来）；**填一半 → 启动失败**（半配置一定是打字漏了）。
+`[music]`（`/music` 的 WebDAV 凭据、上传目标与音源列表）是**可选段**：
+**整段不碰 → `/music` 不可用但程序正常启动**（现有部署没有这一段，
+不能因升级就起不来）；**碰了就必须配成能用的样子** —— 凭据齐全、
+且**至少一个完整的上传目标**（`name` + `url` 同时填）。
+「半个目标」（有 `name` 没 `url`）一律启动失败，那必然是打字漏了。
+`sources` 是有序数组，**顺序即优先级**，不在列表里即关闭；
+缺省等价于 `["musicso", "mp3pm"]` 全部启用，显式写 `[]` 则启动失败。
 凭据只写 `myconfig.toml`，`config.toml` 留空占位——后者进 git 且仓库公开。
+
+`[network]`（可选）只有一个 `proxy` 字段：留空即全部直连；非空则**所有**
+出站 HTTP 走该代理，不提供 `no_proxy`（按主机分流交给代理程序自己的规则）。
+落地方式是在 `main` 里覆盖 `http.DefaultTransport.Proxy` 并给共享 client
+的 Transport 设一次 —— 仓库里五个自建 client 的 `Transport` 都是 nil、
+会回落到 `DefaultTransport`，所以**不需要改任何构造函数签名**。
+注意 HN 摘要走的是 `http://127.0.0.1:50051` 的 Python sidecar，
+代理程序的规则里应给本机地址留直连。
 
 ## Conventions specific to this repo
 
