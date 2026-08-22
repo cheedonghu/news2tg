@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/cheedonghu/news2tg/internal/notify"
@@ -83,10 +84,23 @@ func (r *Runner) Run(ctx context.Context, chatID int64, query string) error {
 
 	slog.InfoContext(ctx, "开始上传音乐到 WebDAV", "file", filename, "bytes", track.Bytes)
 
+	// stMu 只保护上传阶段：Uploader 内部给每个目标起一个 goroutine，
+	// onProgress（也就是这里的回调）在 wg.Wait() 返回之前会被这些 goroutine
+	// 并发调用 —— 两个目标前后脚完成时，回调会在不同 goroutine 里同时跑，
+	// 此时并发读写同一个 st.Targets / *st 是未同步的数据竞争。
+	// agent 阶段（上面）和 Upload 返回之后（下面的 st.Stage/st.Err）都在
+	// wg.Wait() 建立的 happens-before 之外/之后发生，不会跟这把锁保护的
+	// 并发窗口重叠，所以不需要锁 —— 别把锁的范围"顺手"扩大到整个函数。
+	// 锁只护住共享字段的读写，不覆盖 rep.Update 的网络 IO：Update 里还有
+	// Telegram 的节流/发送逻辑，锁着它会让并发的另一次回调白等一次 IO。
+	var stMu sync.Mutex
 	targets, upErr := r.uploader.Upload(ctx, track.LocalPath, filename, func(ts []TargetStatus) {
 		// 每个目标状态一变就刷进度。Reporter 内部会节流，这里放心调。
+		stMu.Lock()
 		st.Targets = ts
-		rep.Update(ctx, *st)
+		snapshot := *st // 锁内拷贝完整快照，锁外再发，IO 不占锁
+		stMu.Unlock()
+		rep.Update(ctx, snapshot)
 	})
 	st.Targets = targets
 

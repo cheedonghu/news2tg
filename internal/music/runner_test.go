@@ -3,9 +3,13 @@ package music
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeFetcher 替代真实 agent，让 Runner 的编排逻辑能脱离 LLM 单测。
@@ -137,5 +141,48 @@ func TestRunnerUploadPartialFailedStillSucceeds(t *testing.T) {
 
 	if err := newTestRunner(f, u, &fakeEditor{}).Run(context.Background(), 1, "x"); err != nil {
 		t.Fatalf("一成一败时 Run 不该报错: %v", err)
+	}
+}
+
+// TestRunnerConcurrentUploadNoRace 是 code review 补的回归测试：上面四个用例
+// 都用 fakeUploader，它同步调一次 onProgress，完全绕开了真实 *Uploader 里
+// "每个目标一个 goroutine、onProgress 在这些 goroutine 里并发触发"这条路径，
+// 所以测不出 Runner 回调里并发读写 st.Targets 的数据竞争。
+//
+// 这里换成真实的 *Uploader 打真实的 httptest 服务端，至少 3 个目标、
+// 服务端故意加一点延迟让完成时间靠得更近，并重复跑几轮，
+// 让 `go test -race` 有足够高的概率真正撞上并发窗口。
+//
+// 判别力已人工验证：把 runner.go 里 onProgress 回调的 stMu.Lock/Unlock
+// 临时去掉、snapshot 直接用 *st 后重跑本测试 + -race，会稳定报出
+// "DATA RACE" 且落点正是 st.Targets 的读写（runner.go 的回调那两行）；
+// 恢复加锁后同样的命令稳定通过。修复报告里贴了两次的完整输出。
+func TestRunnerConcurrentUploadNoRace(t *testing.T) {
+	// 服务端每次请求都象征性停一下：把三次 PUT 的完成时间拉近，
+	// 提高 onProgress 被多个 goroutine 同时调用的概率。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		time.Sleep(2 * time.Millisecond)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	t.Cleanup(srv.Close)
+
+	targets := []Target{
+		{Name: "阿里云盘", URL: srv.URL + "/dav/a"},
+		{Name: "OneDrive", URL: srv.URL + "/dav/b"},
+		{Name: "第三方", URL: srv.URL + "/dav/c"},
+	}
+
+	// 跑几轮：单轮 3 个目标的并发窗口未必每次都被调度器实际交叉执行到，
+	// 多轮能显著提高 -race 检测到真实交叠的概率。
+	for i := 0; i < 5; i++ {
+		up := NewUploader(srv.Client(), targets, "alist", "pw")
+		f := &fakeFetcher{track: &Track{Artist: "A", Title: "T", Bytes: 7}}
+		fe := &fakeEditor{}
+		r := &Runner{fetcher: f, uploader: up, editor: fe}
+
+		if err := r.Run(context.Background(), 1, "x"); err != nil {
+			t.Fatalf("第 %d 轮 Run 意外报错: %v", i, err)
+		}
 	}
 }
