@@ -123,3 +123,108 @@ func TestFromFileMissingModel(t *testing.T) {
 		})
 	}
 }
+
+// musicTOML 拼一份带 [music] 段的最小可用配置。
+// deepseek/storage 是 FromFile 的必填项，每个用例都得带上，抽成 helper 免得重复。
+func musicTOML(musicSection string) string {
+	return `
+[deepseek]
+api_token = "k"
+model = "deepseek-v4-flash"
+agent_model = "deepseek-chat"
+
+[storage]
+db_path = "./target/dev.db"
+` + musicSection
+}
+
+// TestFromFileMusicAbsent 验证：整个 [music] 段缺失时不报错，Configured() 为 false。
+// 这是「可选功能不能让现有部署升级即挂」这条设计的守门测试。
+func TestFromFileMusicAbsent(t *testing.T) {
+	cfg, err := FromFile(writeTempTOML(t, musicTOML("")))
+	if err != nil {
+		t.Fatalf("FromFile 意外报错: %v", err)
+	}
+	if cfg.Music.Configured() {
+		t.Errorf("[music] 段缺失时 Configured() 应为 false")
+	}
+}
+
+// TestFromFileMusicComplete 验证：六项齐全时解析正确且 Configured() 为 true。
+func TestFromFileMusicComplete(t *testing.T) {
+	cfg, err := FromFile(writeTempTOML(t, musicTOML(`
+[music]
+webdav_user   = "alist"
+webdav_pass   = "pw"
+webdav_name_1 = "阿里云盘"
+webdav_url_1  = "http://alist:5244/dav/aliyun/Music"
+webdav_name_2 = "OneDrive"
+webdav_url_2  = "http://alist:5244/dav/onedrive/Music"
+`)))
+	if err != nil {
+		t.Fatalf("FromFile 意外报错: %v", err)
+	}
+	if !cfg.Music.Configured() {
+		t.Fatalf("六项齐全时 Configured() 应为 true")
+	}
+	if cfg.Music.WebdavName1 != "阿里云盘" {
+		t.Errorf("WebdavName1 = %q, want %q", cfg.Music.WebdavName1, "阿里云盘")
+	}
+	if cfg.Music.WebdavURL2 != "http://alist:5244/dav/onedrive/Music" {
+		t.Errorf("WebdavURL2 = %q", cfg.Music.WebdavURL2)
+	}
+	if cfg.Music.WebdavPass != "pw" {
+		t.Errorf("WebdavPass = %q, want %q", cfg.Music.WebdavPass, "pw")
+	}
+}
+
+// TestFromFileMusicPartial 验证：填了一部分就直接启动失败。
+// 半配置一定是打字漏了，静默降级只会让人对着「上传失败」抓瞎。
+func TestFromFileMusicPartial(t *testing.T) {
+	cases := []struct {
+		name    string
+		section string
+	}{
+		{
+			name: "只填了凭据没填目标",
+			section: `
+[music]
+webdav_user = "alist"
+webdav_pass = "pw"
+`,
+		},
+		{
+			name: "第二个目标缺 url",
+			section: `
+[music]
+webdav_user   = "alist"
+webdav_pass   = "pw"
+webdav_name_1 = "阿里云盘"
+webdav_url_1  = "http://alist:5244/dav/aliyun/Music"
+webdav_name_2 = "OneDrive"
+`,
+		},
+		{
+			name: "只有空白字符也算填了",
+			section: `
+[music]
+webdav_user = "   "
+`,
+		},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			cfg, err := FromFile(writeTempTOML(t, musicTOML(c.section)))
+			if err == nil {
+				t.Fatalf("FromFile 期望报错，却成功返回 %+v", cfg)
+			}
+			if cfg != nil {
+				t.Errorf("报错时应返回 nil *Config，实际 %+v", cfg)
+			}
+			if !strings.Contains(err.Error(), "[music]") {
+				t.Errorf("错误信息 %q 应指明是 [music] 段的问题", err.Error())
+			}
+		})
+	}
+}

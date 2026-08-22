@@ -94,6 +94,82 @@ type Storage struct {
 	DBPath string `toml:"db_path"`
 }
 
+// Music 段：/music 指令的 WebDAV 上传目标与凭据。
+//
+// 为什么是六个平铺字段而不是一个数组？
+// 需求是"固定两个目标、每次都传"，不需要动态列表；平铺字段最直白，
+// 也不用为 TOML 数组解析写额外代码。Go 侧组装成 []music.Target 之后，
+// Uploader 内部仍然是按切片循环的，将来加第三个网盘只需在这里加两个字段。
+//
+// 凭据只写在 myconfig.toml（已 gitignore）里 —— config.toml 是进 git 的模板，
+// 仓库又是公开的，密码写进去等于直接泄漏。
+type Music struct {
+	WebdavUser  string `toml:"webdav_user"`
+	WebdavPass  string `toml:"webdav_pass"`
+	WebdavName1 string `toml:"webdav_name_1"`
+	WebdavURL1  string `toml:"webdav_url_1"`
+	WebdavName2 string `toml:"webdav_name_2"`
+	WebdavURL2  string `toml:"webdav_url_2"`
+}
+
+// fields 把六个字段收成一张「配置项名 → 值」表，供 Configured/validate 共用，
+// 避免两处各写一遍字段清单（加字段时只改这里一处）。
+// 返回切片而不是 map：要保证报错时字段顺序稳定，map 遍历顺序是随机的。
+func (m Music) fields() []struct {
+	key string
+	val string
+} {
+	return []struct {
+		key string
+		val string
+	}{
+		{"webdav_user", m.WebdavUser},
+		{"webdav_pass", m.WebdavPass},
+		{"webdav_name_1", m.WebdavName1},
+		{"webdav_url_1", m.WebdavURL1},
+		{"webdav_name_2", m.WebdavName2},
+		{"webdav_url_2", m.WebdavURL2},
+	}
+}
+
+// Configured 报告 [music] 是否配置完整。
+// 全空 = 功能关闭（不是错误）；FromFile 已经保证不会出现"填一半"的状态，
+// 所以这里只需判断第一个字段非空即可 —— 但为了不依赖那个隐含前提，仍逐项检查。
+func (m Music) Configured() bool {
+	for _, f := range m.fields() {
+		if strings.TrimSpace(f.val) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// validate 执行「要么全空，要么全填」的校验。
+//   - 全空   → 功能关闭，返回 nil（现有部署没有 [music] 段，不能因升级就起不来）
+//   - 全填   → 返回 nil
+//   - 填一半 → 返回 error，列出缺了哪些项，启动即失败
+//
+// 这里判断"是否为空"用的是原始值（f.val == ""），不像 Configured() 那样 TrimSpace：
+// 只要用户敲了字符（哪怕只是空格），就说明这一项"动过"，视为"填了"；
+// 否则漏填一项、恰好又打成纯空格，会被误判成"整段没配"而放过校验。
+func (m Music) validate() error {
+	var missing []string
+	filled := 0
+	for _, f := range m.fields() {
+		if f.val == "" {
+			missing = append(missing, f.key)
+		} else {
+			filled++
+		}
+	}
+	// filled == 0 是「整段没配」，功能关闭；len(missing) == 0 是「配全了」。
+	if filled == 0 || len(missing) == 0 {
+		return nil
+	}
+	// strings.Join 把切片按分隔符拼成一句话，比循环拼字符串直观。
+	return fmt.Errorf("[music] 段配置不完整，缺少：%s（该段要么整段不配、要么六项全配）", strings.Join(missing, ", "))
+}
+
 // Config 是顶层配置结构，对应整个 config.toml。
 // 字段名前的 toml tag 把 Go 字段映射到 TOML 的 [table] 名。
 type Config struct {
@@ -102,6 +178,7 @@ type Config struct {
 	DeepSeek DeepSeek `toml:"deepseek"`
 	Jina     Jina     `toml:"jina"`
 	Storage  Storage  `toml:"storage"` // 新增
+	Music    Music    `toml:"music"`   // 新增；可选功能，全空即关闭
 }
 
 // FromFile 读取并解析配置文件。
@@ -124,6 +201,11 @@ func FromFile(path string) (*Config, error) {
 	}
 	if strings.TrimSpace(cfg.Storage.DBPath) == "" {
 		return nil, fmt.Errorf("[storage] db_path 未配置（本次升级新增的必填项，参考 config.toml 模板）")
+	}
+	// [music] 是可选功能：全空则 /music 不可用，但不阻止启动；
+	// 填一半则报错 —— 半配置状态一定是打字漏了。
+	if err := cfg.Music.validate(); err != nil {
+		return nil, err
 	}
 	return &cfg, nil
 }
