@@ -3,7 +3,6 @@ package music
 import (
 	"context"
 	"errors"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -279,30 +278,32 @@ func TestReporterConcurrentDoneNeverOverwritten(t *testing.T) {
 // 同一节流窗口内并发涌入的 Update，只应该产生"首发已经发过的那一次"真实
 // 传输，不应该因为并发而让节流闸门被同时绕过好几次。
 //
-// 旧实现的漏洞是 lastSent 只在 IO 完成后才写回：并发的 Update 在第一次 IO
-// 还没做完时各自算出的 wait 都基于同一份"过期"的 lastSent，于是都判定
-// <=0、都直接发一次真实请求。这里验证修复后（gate 通过的瞬间就在锁内
-// 占住 lastSent）不会再复现这个问题。
+// 关键：不能先顺序发一条把 lastSent "焐热"再起并发批次——哪怕在旧代码上，
+// 那一条顺序调用也会完整跑完（它本来就没有任何并发对手），等它返回时
+// lastSent 早已经写回，后面的并发批次天然安全，测的是 pending/timer 的
+// 合并逻辑（这部分从来没坏过），根本碰不到 bug 真正的触发条件。
+//
+// 真正会触发旧 bug 的窗口是"冷启动"：lastSent 还是零值、第一次真实发送
+// 还在飞的那一小段时间。旧实现里 lastSent 只在 IO 完成后才写回，于是这段
+// 时间内所有并发到达的 Update 都用同一份"零值/过期" lastSent 判定
+// "该发了"，各自真的调一次 SendEditable——多出来的消息永远没人再编辑
+// （孤儿）。这里直接从冷启动开始并发灌 N 个 Update，不做任何顺序铺垫，
+// 验证修复后（gate 通过瞬间在锁内占位 lastSent + send() 内 sendMu 把
+// "判断该不该发+真正发送"串成原子操作）整个过程里 SendEditable 只会
+// 被调用一次，其余全部落地为对同一个 msgID 的 Edit。
 func TestReporterConcurrentUpdatesCoalesce(t *testing.T) {
-	for round := 0; round < 10; round++ {
+	for round := 0; round < 20; round++ {
 		fe := &fakeEditor{}
-		const throttle = 200 * time.Millisecond
-		r := newTGReporter(fe, 1, throttle)
+		// 节流拉到 0：不依赖 pending/timer 分支，让每个 goroutine 都直接
+		// 走 gate 判断这条路径，最大化触发 bug 的窗口。
+		r := newTGReporter(fe, 1, 0)
 		ctx := context.Background()
 
-		// 顺序发第一条，占住这个节流窗口的起点，同时确保 msgID 已经拿到。
-		r.Update(ctx, Status{Query: "晴天", Searches: 0})
-		if sends, edits := fe.counts(); sends != 1 || edits != 0 {
-			t.Fatalf("round %d: 首发之后 sends=%d edits=%d, want 1,0", round, sends, edits)
-		}
-
-		// 紧接着一大批并发 Update，全部应该落在同一节流窗口内被合并进 pending，
-		// 而不是各自触发一次真实传输。
 		const n = 50
 		var wg sync.WaitGroup
 		wg.Add(n)
-		start := make(chan struct{})
-		for i := 1; i <= n; i++ {
+		start := make(chan struct{}) // 发令枪：所有 goroutine 从冷启动状态一起起跑
+		for i := 0; i < n; i++ {
 			i := i
 			go func() {
 				defer wg.Done()
@@ -313,30 +314,20 @@ func TestReporterConcurrentUpdatesCoalesce(t *testing.T) {
 		close(start)
 		wg.Wait()
 
-		if sends, edits := fe.counts(); sends != 1 || edits != 0 {
-			t.Fatalf("round %d: 并发窗口内 sends=%d edits=%d, want 1,0（应全部合并等补发，不应有并发的真实传输）", round, sends, edits)
-		}
-
-		// 并发批次全部完成之后（happens-after，由 wg.Wait() 保证），再顺序发
-		// 一条带唯一标记的快照。真正并发写 pending 时"谁最后写入"本就没有
-		// 确定的顺序，不该拿它做断言；这条顺序调用则确定性地成为 pending
-		// 里最新的一份，用来验证补发用的是"当前最新"而不是某个陈旧快照。
-		// 注意：不能用 "-" 之类的 MarkdownV2 特殊字符拼标记——渲染时会被转义成
-		// "\-"，导致原样子串匹配失败；这里只用中文字和数字，二者都不转义。
-		tailMarker := "尾标记轮次" + strconv.Itoa(round)
-		r.Update(ctx, Status{Query: tailMarker, Searches: n + 1})
-
-		time.Sleep(throttle * 3)
-
-		sends, edits := fe.counts()
-		if sends != 1 || edits != 1 {
-			t.Fatalf("round %d: 窗口结束后 sends=%d edits=%d, want 1,1（只应该补发一次）", round, sends, edits)
-		}
 		fe.mu.Lock()
-		last := fe.edits[0]
-		fe.mu.Unlock()
-		if !strings.Contains(last, tailMarker) {
-			t.Fatalf("round %d: 补发内容里没有窗口内最后一次顺序调用的标记 %q:\n%s", round, tailMarker, last)
+		if len(fe.sends) != 1 {
+			timeline := strings.Join(fe.calls, "\n---\n")
+			fe.mu.Unlock()
+			t.Fatalf("round %d: SendEditable 调用 %d 次, want 1（冷启动并发下出现了不止一次首发，说明有消息被孤儿化）\n完整时间线:\n%s",
+				round, len(fe.sends), timeline)
 		}
+		for i, id := range fe.editIDs {
+			if id != 42 {
+				fe.mu.Unlock()
+				t.Fatalf("round %d: 第 %d 次 Edit 用的 msgID=%d, want 42（跟唯一一次 SendEditable 返回的不一致，说明消息被孤儿化）",
+					round, i, id)
+			}
+		}
+		fe.mu.Unlock()
 	}
 }
