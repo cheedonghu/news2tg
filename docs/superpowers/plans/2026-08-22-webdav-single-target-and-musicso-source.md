@@ -656,20 +656,46 @@ git commit -m "#feat [music] 支持只配一个 WebDAV 目标
 // fmt.Sprintf("%s - %s · %s", Artist, Title, Duration)，会渲染成
 // "周杰伦 - 晴天 · " —— 行尾挂一个没有下文的分隔符，看起来像渲染坏了。
 // Bytes 和 Source 两段本来就是"有才拼"的写法，这里只是把漏掉的一处补齐。
+// ⚠️ 这个 Track **不能带 Source 或 Bytes**。带了的话，未修复的实现拼出来是
+// "周杰伦 - 晴天 ·  · musicso" —— 悬空的分隔点落在**行中**而不是行尾，
+// 下面那三个行尾模式就全都命中不了，测试无论实现改没改都是绿的。
+// "有 Source" 那条路径由紧随其后的 WithSource 用例单独覆盖。
 func TestRenderStatusEmptyDuration(t *testing.T) {
 	md := renderStatus(Status{
 		Query: "晴天",
 		Stage: StageDownloading,
-		Track: &Track{Artist: "周杰伦", Title: "晴天", Duration: "", Source: "musicso"},
+		Track: &Track{Artist: "周杰伦", Title: "晴天", Duration: ""},
 	})
 
-	// 转义后的分隔点后面必须还有内容（这里是 source），不能是行尾。
+	// 时长为空时，曲目行必须干净收尾，不能挂一个没有下文的分隔点。
 	for _, bad := range []string{"· \n", "·\n", "· $"} {
 		if strings.Contains(md, bad) {
 			t.Errorf("时长为空时渲染出了悬空的分隔点 %q:\n%s", bad, md)
 		}
 	}
 	// 正常内容仍要在。
+	for _, want := range []string{"周杰伦", "晴天"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("渲染结果里缺少 %q\n实际:\n%s", want, md)
+		}
+	}
+}
+
+// TestRenderStatusEmptyDurationWithSource 覆盖"时长为空但后面还有 Source"的路径。
+//
+// 这条路径上悬空的分隔点不在行尾，而是和 Source 那段的分隔点挤在一起，
+// 渲染成 "晴天 ·  · musicso" —— 连着两个点。上面那个用例看不见它，
+// 所以必须单独断言。
+func TestRenderStatusEmptyDurationWithSource(t *testing.T) {
+	md := renderStatus(Status{
+		Query: "晴天",
+		Stage: StageDownloading,
+		Track: &Track{Artist: "周杰伦", Title: "晴天", Duration: "", Source: "musicso"},
+	})
+
+	if strings.Contains(md, "·  ·") {
+		t.Errorf("时长为空时渲染出了连续两个分隔点:\n%s", md)
+	}
 	for _, want := range []string{"周杰伦", "晴天", "musicso"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("渲染结果里缺少 %q\n实际:\n%s", want, md)
