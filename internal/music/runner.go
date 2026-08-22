@@ -10,10 +10,19 @@ import (
 	"github.com/cheedonghu/news2tg/internal/notify"
 )
 
-// agentTimeout 是 agent 循环（搜索 + 下载）的超时，与 /summary 的 180s 对齐。
-// 模型最多 6 轮调用 + 一次下载，正常在 30s 内跑完，180s 是宽松兜底。
-// 上传的超时在 Uploader 内部按目标各自计（300s），总预算 600s 由 command.Bot 套。
-const agentTimeout = 180 * time.Second
+// agentTimeout 是 agent 循环（搜索 + 下载）的超时。
+//
+// 这个数字是按 agent.go 的 defaultMaxSteps 最坏路径估出来的：双源场景下
+// 搜→换词重搜→换源搜→换词重搜→下载→下载失败改选→再下载→输出最终 JSON
+// 共 8 轮，每轮是一次带 tools、上下文逐轮变长的 DeepSeek 调用，忙时
+// 15-25s 很常见，8 轮就是 120-200s，再加下载本身的传输时间，
+// 300s 才有足够余量；180s 曾经卡在这条最坏路径上，把"未收敛"变成了
+// "超时失败"，白烧前面几轮的 token。
+// ⚠️ 改 agent.go 的 defaultMaxSteps 时必须回头检查这个值是否还够用——
+// 两个常量是耦合的，只调一个就会重演上面这个问题。
+// 外层 command.Bot 的 musicTimeout 是 600s（bot.go），其中还包含 Uploader
+// 按目标各自计的上传超时（300s/目标），300s 在这个总预算里仍有余量。
+const agentTimeout = 300 * time.Second
 
 // fetcher / uploader 是**消费侧接口**（"accept interfaces"）：
 // Runner 只依赖这两件能力，不直接绑死 *Agent / *Uploader 的具体类型。

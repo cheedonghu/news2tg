@@ -101,12 +101,17 @@ TOML (`internal/config/config.go`), mapped via struct tags. `[telegram]` (incl. 
 凭据只写 `myconfig.toml`，`config.toml` 留空占位——后者进 git 且仓库公开。
 
 `[network]`（可选）只有一个 `proxy` 字段：留空即全部直连；非空则**所有**
-出站 HTTP 走该代理，不提供 `no_proxy`（按主机分流交给代理程序自己的规则）。
+出站 HTTP 走该代理，不提供 `no_proxy`（按主机分流交给代理程序自己的规则）
+——但回环地址（127.0.0.1 / localhost）例外，见下段。
 落地方式是在 `main` 里覆盖 `http.DefaultTransport.Proxy` 并给共享 client
 的 Transport 设一次 —— 仓库里五个自建 client 的 `Transport` 都是 nil、
 会回落到 `DefaultTransport`，所以**不需要改任何构造函数签名**。
-注意 HN 摘要走的是 `http://127.0.0.1:50051` 的 Python sidecar，
-代理程序的规则里应给本机地址留直连。
+`http.ProxyURL` 本身是**无条件**代理、不带 loopback 豁免（不像
+`http.ProxyFromEnvironment` 那样自带），所以 `main` 里手动包了一层
+`isLoopback` 判断，把回环地址强制直连——这不是主动权在代理程序那边的事，
+是 Go 侧不加这层就一定会把回环请求送进代理。HN 摘要走的
+`http://127.0.0.1:50051` Python sidecar、以及常见部署里跑在本机的
+WebDAV（如 alist）都靠这条豁免，不需要在代理规则里另作处理。
 
 ## Conventions specific to this repo
 

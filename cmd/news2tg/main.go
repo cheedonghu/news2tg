@@ -91,11 +91,31 @@ func main() {
 	if p := strings.TrimSpace(cfg.Network.Proxy); p != "" {
 		// 这里可以忽略 error：FromFile 已经校验过一遍，走到这儿必定合法。
 		u, _ := url.Parse(p)
-		proxyFunc = http.ProxyURL(u)
+		// http.ProxyURL 返回的函数是**无条件**的：不管目标是谁，一律返回
+		// 这个固定代理地址，不像 http.ProxyFromEnvironment 那样自带
+		// loopback 豁免。这里必须自己补上，否则一个具体的场景会被打挂：
+		// HN 摘要走的 Python sidecar（127.0.0.1:50051）和常见部署里跑
+		// 在本机的 WebDAV（如 alist，127.0.0.1:5244）都在回环地址上——
+		// 一旦启用代理，给它们的请求也会被送进代理，代理再去连它自己
+		// 那侧的 127.0.0.1，必然连不上或连到不相干的东西。为救某个
+		// 被墙的音源站而开的代理开关，会反过来把本机服务打挂。
+		// 这不是引入一套 no_proxy 规则表——只豁免"回环"这一种情况，
+		// 语义明确，不需要额外配置。
+		proxied := http.ProxyURL(u)
+		proxyFunc = func(req *http.Request) (*url.URL, error) {
+			if host := req.URL.Hostname(); host == "localhost" || isLoopback(host) {
+				return nil, nil // nil URL = 不走代理，直连
+			}
+			return proxied(req)
+		}
 		// 类型断言：DefaultTransport 的静态类型是 http.RoundTripper 接口，
 		// 要拿到 Proxy 字段得先断言回具体的 *http.Transport。
 		http.DefaultTransport.(*http.Transport).Proxy = proxyFunc
-		slog.Info("全局 HTTP 代理已启用", "proxy", p)
+		// 日志里不能打代理地址原文：带认证的代理常写成
+		// http://user:pass@proxy.example:7890，直接打印会把密码写进
+		// stderr（进而进 Docker 日志）。u.Redacted() 是标准库为此而生的方法，
+		// 会把密码部分替换成 xxxxx，主机、端口、用户名仍然保留、足够排查。
+		slog.Info("全局 HTTP 代理已启用", "proxy", u.Redacted())
 	}
 
 	// 4) 初始化 Telegram 客户端（内部会真正去连一次 bot API 验证 token，
@@ -302,4 +322,14 @@ func main() {
 	slog.Info("received shutdown signal, terminating...")
 	// 等所有 monitor goroutine 退出
 	wg.Wait()
+}
+
+// isLoopback 判断一个 host 字符串是否是回环地址（127.0.0.0/8 或 ::1）。
+//
+// 只处理已经是 IP 字面量的情况：net.ParseIP 对域名（如 "localhost"）返回
+// nil，所以 "localhost" 这个常见写法要在调用方单独比较字符串兜底——
+// 见上面 proxyFunc 里 host == "localhost" 那一判断。
+func isLoopback(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

@@ -22,6 +22,9 @@ const (
 	// 多音源的最坏路径：musicso 搜 → 换词 → mp3pm 搜 → 换词 → 下载 →
 	// 下载失败改选 → 再下载 → 输出最终 JSON，共 8 轮，留两轮余量取 10。
 	// 音源变多时这个值要跟着涨，否则会稳定撞上"未收敛"。
+	// ⚠️ 改这个值时必须同步检查 runner.go 的 agentTimeout ——
+	// 它是按这里的最坏路径轮数估出来的超时预算，两个旋钮是耦合的，
+	// 只调一个就会出现"轮数够了但先被超时打断"的问题。
 	defaultMaxSteps = 10
 	// defaultMaxBytes 是单曲下载大小上限，防御模型选中一个错误条目把磁盘写爆。
 	// 50 << 20 = 50 MiB；正常 mp3 在 3-15 MB 之间。
@@ -55,6 +58,19 @@ func tempFileName(srcName, id string) string {
 
 // errTooLarge 是下载超限的哨兵错误，供 errors.Is 判别。
 var errTooLarge = errors.New("下载内容超过大小上限")
+
+// errSourceUnavailable 是"站点级不可达"的哨兵错误，供 errors.Is 判别。
+//
+// 为什么要单独区分它，而不是让 doSearch 把所有 Search 错误一律回灌成
+// "换个关键词再试"：像 musicso 的 Cloudflare 质询这种错误是站点整体
+// 拒绝服务，跟搜索关键词毫无关系——换多少词结果都一样，模型只会在这条
+// 死路上白烧 1-2 轮。质询错误的措辞本身已经说得很清楚，但一旦被
+// doSearch 拼上"可以换个关键词再试一次"的通用尾巴，模型收到的却是
+// 相反的指令。各 Source 在这类站点级错误上用 %w 包一层这个哨兵
+// （参见 musicso.go 的 musicSoChallenge），doSearch 就能用 errors.Is
+// 认出来，回灌"换词无用，请改用其它音源"而不是通用文案。
+// 用法与 errTooLarge 保持一致的风格。
+var errSourceUnavailable = errors.New("音源站点级不可达")
 
 // chatCompleter 抽象 LLM 聊天补全调用：*openai.Client 天然满足，
 // 测试时注入 fake，避免真发网络请求。同 internal/agent 的做法。
@@ -362,6 +378,11 @@ func (r *run) doSearch(ctx context.Context, srcName, rawArgs string) string {
 		r.st.Found = 0
 		r.rep.Update(ctx, *r.st)
 		slog.ErrorContext(ctx, "音乐搜索失败", "source", srcName, "query", args.Query, "err", err)
+		// 站点级不可达（如 Cloudflare 质询）跟关键词无关，换词只会白烧步数；
+		// 用 errors.Is 认出这类错误后给出相反的指引，让模型转去试其它音源。
+		if errors.Is(err, errSourceUnavailable) {
+			return fmt.Sprintf("搜索失败: %v。这是该音源站点级不可达，换关键词无用，请改用其它音源。", err)
+		}
 		return fmt.Sprintf("搜索失败: %v。可以换个关键词再试一次。", err)
 	}
 	if len(cands) == 0 {
