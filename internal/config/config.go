@@ -132,42 +132,71 @@ func (m Music) fields() []struct {
 	}
 }
 
-// Configured 报告 [music] 是否配置完整。
-// 全空 = 功能关闭（不是错误）；FromFile 已经保证不会出现"填一半"的状态，
-// 所以这里只需判断第一个字段非空即可 —— 但为了不依赖那个隐含前提，仍逐项检查。
+// touched 判断某一项"用户是否敲过字符"：只要原始值非空就算，哪怕只是纯空格。
+// 用来判断整段 [music] 到底有没有在用。
+// 注意不能用 TrimSpace 判断——"六项全打成空格"如果被当成"没碰过"，
+// 就会被 validate() 放行成"整段没配"，而这其实和"填一半"一样是打字失误，
+// 理应报错，不该被静默放过。
+func touched(val string) bool {
+	return val != ""
+}
+
+// usable 判断某一项的值 TrimSpace 之后是否真的能用——纯空格 trim 完是空串，算不能用。
+// Configured() 用它判断功能能不能跑；validate() 用它判断"填了的项里有没有废的"。
+func usable(val string) bool {
+	return strings.TrimSpace(val) != ""
+}
+
+// Configured 报告 [music] 是否配置完整（六项是否全部 usable）。
+// 只要经过 validate() 校验（见下）成功返回的 cfg，Configured() 就只有两种结果：
+// 要么全部 usable（六项都填了正经值），要么零项 touched（整段没配）——
+// 不会存在"进程正常启动了，但其实只是半配置、Configured() 悄悄是 false"这种状态；
+// 那种状态在 validate() 里已经变成 FromFile 报错、根本起不来了。
 func (m Music) Configured() bool {
 	for _, f := range m.fields() {
-		if strings.TrimSpace(f.val) == "" {
+		if !usable(f.val) {
 			return false
 		}
 	}
 	return true
 }
 
-// validate 执行「要么全空，要么全填」的校验。
-//   - 全空   → 功能关闭，返回 nil（现有部署没有 [music] 段，不能因升级就起不来）
-//   - 全填   → 返回 nil
-//   - 填一半 → 返回 error，列出缺了哪些项，启动即失败
+// validate 执行「要么整段不碰，要么六项全部给出可用值」的校验：
+//   - 零项 touched（六项原始值全是空串）→ 整段没配，功能关闭，返回 nil
+//     （现有部署没有 [music] 段，不能因为这次升级就启动失败）
+//   - 有 touched 但六项没有全部 usable（缺项，或某项填的是纯空格）→ 返回 error，
+//     列出所有不 usable 的项名，启动即失败
+//   - 六项全部 usable → 返回 nil
 //
-// 这里判断"是否为空"用的是原始值（f.val == ""），不像 Configured() 那样 TrimSpace：
-// 只要用户敲了字符（哪怕只是空格），就说明这一项"动过"，视为"填了"；
-// 否则漏填一项、恰好又打成纯空格，会被误判成"整段没配"而放过校验。
+// 这里故意拆成两个谓词而不是一个：先用 touched（原始值非空）判断"这一段是不是在用"，
+// 再用 usable（TrimSpace 非空）判断"填的东西能不能用"。只用一个会顾此失彼——
+// 全用 TrimSpace 的话，"五项真值 + 一项纯空格"里那个空格项会被当成"没填"，
+// 和其余全空的字段混在一起，误判成"整段没配"而放行，管理员会拿着一个
+// 看似正常启动、实则 /music 静默不可用的进程去抓瞎；全用原始值的话，
+// "六项全打成空格"又会被当成"六项都碰过"，可实际一个能用的值都没有，
+// 同样不该被放过。
 func (m Music) validate() error {
-	var missing []string
-	filled := 0
+	anyTouched := false
 	for _, f := range m.fields() {
-		if f.val == "" {
-			missing = append(missing, f.key)
-		} else {
-			filled++
+		if touched(f.val) {
+			anyTouched = true
+			break
 		}
 	}
-	// filled == 0 是「整段没配」，功能关闭；len(missing) == 0 是「配全了」。
-	if filled == 0 || len(missing) == 0 {
-		return nil
+	if !anyTouched {
+		return nil // 整段没配，功能关闭
+	}
+	var unusable []string
+	for _, f := range m.fields() {
+		if !usable(f.val) {
+			unusable = append(unusable, f.key)
+		}
+	}
+	if len(unusable) == 0 {
+		return nil // 六项全部 usable，配置完整
 	}
 	// strings.Join 把切片按分隔符拼成一句话，比循环拼字符串直观。
-	return fmt.Errorf("[music] 段配置不完整，缺少：%s（该段要么整段不配、要么六项全配）", strings.Join(missing, ", "))
+	return fmt.Errorf("[music] 段配置不完整，缺少：%s（该段要么整段不配、要么六项全配）", strings.Join(unusable, ", "))
 }
 
 // Config 是顶层配置结构，对应整个 config.toml。

@@ -211,6 +211,23 @@ webdav_name_2 = "OneDrive"
 webdav_user = "   "
 `,
 		},
+		{
+			// 复现 review 指出的 Critical：五项填了正经值，只有一项是纯空格
+			// （典型的打字失误——多敲了个空格、或者复制粘贴漏了值）。
+			// touched() 看原始值，六项都非空，不会被误判成"整段没配"；
+			// usable() 一 TrimSpace，webdav_pass 就现形成空串，必须报错，
+			// 不能像 Configured() 那样悄悄把整个 [music] 判成"未配置"就完事。
+			name: "五项真值加一项纯空格",
+			section: `
+[music]
+webdav_user   = "alist"
+webdav_pass   = "   "
+webdav_name_1 = "阿里云盘"
+webdav_url_1  = "http://alist:5244/dav/aliyun/Music"
+webdav_name_2 = "OneDrive"
+webdav_url_2  = "http://alist:5244/dav/onedrive/Music"
+`,
+		},
 	}
 	for _, c := range cases {
 		c := c
