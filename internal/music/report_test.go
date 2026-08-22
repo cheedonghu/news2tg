@@ -576,24 +576,47 @@ func TestReporterConcurrentUpdatesCoalesce(t *testing.T) {
 
 // TestRenderStatusEmptyDuration 验证：音源不提供时长时，曲目行不留下孤零零的分隔点。
 //
-// musicso.cc 不返回时长，Duration 恒为空串。原先的写法是
-// fmt.Sprintf("%s - %s · %s", Artist, Title, Duration)，会渲染成
-// "周杰伦 - 晴天 · " —— 行尾挂一个没有下文的分隔符，看起来像渲染坏了。
-// Bytes 和 Source 两段本来就是"有才拼"的写法，这里只是把漏掉的一处补齐。
+// 未修复时（硬拼 Duration）: 即使时长为空，也会拼出 fmt.Sprintf("%s - %s · %s", Artist, Title, "")
+// 这样行尾就是 `· ` 加换行，形成"周杰伦 - 晴天 · \n"的悬空分隔点。
+// 修复后用"有才拼"逻辑（Bytes / Source 两段本来就这样），时长为空就不拼。
 func TestRenderStatusEmptyDuration(t *testing.T) {
+	md := renderStatus(Status{
+		Query: "晴天",
+		Stage: StageDownloading,
+		Track: &Track{Artist: "周杰伦", Title: "晴天", Duration: ""},
+	})
+
+	// 行尾的分隔点必须被消除：不能包含"· \n"、"·\n"这种模式。
+	for _, bad := range []string{"· \n", "·\n"} {
+		if strings.Contains(md, bad) {
+			t.Errorf("时长为空时渲染出了行尾悬空的分隔点 %q:\n%s", bad, md)
+		}
+	}
+	// 核心内容仍要在：歌手和歌名必须保留。
+	for _, want := range []string{"周杰伦", "晴天"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("渲染结果里缺少 %q\n实际:\n%s", want, md)
+		}
+	}
+}
+
+// TestRenderStatusEmptyDurationWithSource 验证：时长为空但有音源时，不出现双分隔符。
+//
+// 未修复时（硬拼 Duration）: 拼出 fmt.Sprintf("%s - %s · %s", Artist, Title, "") + " · Source"
+// 结果是 "周杰伦 - 晴天 ·  · musicso"，中间出现" ·  · "（两个分隔符夹空格），很丑。
+// 修复后时长为空就不拼，后面再拼 Source，只有一个分隔符。
+func TestRenderStatusEmptyDurationWithSource(t *testing.T) {
 	md := renderStatus(Status{
 		Query: "晴天",
 		Stage: StageDownloading,
 		Track: &Track{Artist: "周杰伦", Title: "晴天", Duration: "", Source: "musicso"},
 	})
 
-	// 转义后的分隔点后面必须还有内容（这里是 source），不能是行尾。
-	for _, bad := range []string{"· \n", "·\n", "· $"} {
-		if strings.Contains(md, bad) {
-			t.Errorf("时长为空时渲染出了悬空的分隔点 %q:\n%s", bad, md)
-		}
+	// 不应出现两个相邻的分隔点（中间只有空格隔开）。
+	if strings.Contains(md, "·  ·") {
+		t.Errorf("时长为空有音源时不应出现双分隔点\"·  ·\":\n%s", md)
 	}
-	// 正常内容仍要在。
+	// Source 和歌曲信息都要完整保留。
 	for _, want := range []string{"周杰伦", "晴天", "musicso"} {
 		if !strings.Contains(md, want) {
 			t.Errorf("渲染结果里缺少 %q\n实际:\n%s", want, md)
