@@ -103,7 +103,20 @@ type tgReporter struct {
 	lastSent time.Time   // 上次**真正发出**的时刻
 	pending  *Status     // 被节流丢弃的最新快照
 	timer    *time.Timer // 节流窗口结束时补发用；nil 表示当前没有待补发
-	finished bool        // Done 之后为 true，之后的 Update 一律忽略
+	finished bool        // Done 之后为 true，之后的 Update 一律忽略（早退优化，见下）
+
+	// sendMu 把"判断该不该发 + 真正发请求"整段串成原子操作。
+	//
+	// 只用 mu 不够：Update/flush 的"检查 finished/terminalSent → 释放 mu →
+	// 调 send"之间有空隙，一个中间态快照可能在这个空隙里被 Done 的终态反超，
+	// 之后仍然把网络请求发出去，把终态覆盖成中间态（且永远没有下一条纠正它）。
+	// sendMu 保证任意时刻只有一个 send() 在“判断 + 传输”，谁先摸到它，
+	// 它的传输就必定发生在后来者的判断之前，从而让终态永远是最后一条。
+	//
+	// 加锁顺序恒定为 sendMu → mu，绝不能反过来；Update/Done/flush 调用
+	// send 之前必须已经释放 mu，否则会死锁或打破这个顺序。
+	sendMu       sync.Mutex
+	terminalSent bool // mu 保护；一旦为 true，任何非终态的 send 直接被丢弃
 }
 
 // NewTelegramReporter 构造一个走 Telegram 原地编辑的 Reporter。
@@ -137,8 +150,15 @@ func (r *tgReporter) Update(ctx context.Context, s Status) {
 		r.mu.Unlock()
 		return
 	}
+	// 立即占住节流位再解锁：如果等 send() 里 IO 完成后才写 lastSent，
+	// 另一个跟这次并发的 Update 在 IO 还没做完时算出的 wait 会用同一份
+	// "过期" lastSent，同样判定 <=0 并跟着直接发一次真实请求 —— 节流窗口
+	// 被并发绕过，两条真实传输谁的响应后到谁就抢到 msgID，另一条消息
+	// 从此再没人编辑（孤儿）。这里提前占位，让并发的另一次调用改走上面
+	// 的 pending 分支，从而只有一次真实传输在飞。
+	r.lastSent = time.Now()
 	r.mu.Unlock()
-	r.send(ctx, s)
+	r.send(ctx, s, false)
 }
 
 // Done 报告终态，无条件立即发出。
@@ -153,7 +173,10 @@ func (r *tgReporter) Done(ctx context.Context, s Status) {
 	r.finished = true
 	r.mu.Unlock()
 
-	r.send(ctx, s)
+	// finished 只挡未来的 Update（见 Update 顶部的早退检查），挡不住已经
+	// 在飞的并发调用（它们的早退检查在 finished=true 之前就已经通过了）。
+	// 真正的“终态不会被覆盖”保证在 send() 里的 sendMu + terminalSent。
+	r.send(ctx, s, true)
 }
 
 // flush 是节流窗口结束时的补发：把最新的 pending 快照发出去。
@@ -166,20 +189,42 @@ func (r *tgReporter) flush(ctx context.Context) {
 	}
 	s := *r.pending // 解引用拷一份，锁外用
 	r.pending = nil
+	// 跟 Update 里的理由一样：先占住节流位，避免跟这一刻恰好并发进来的
+	// Update 一起绕过节流窗口，同时触发两次真实传输。
+	r.lastSent = time.Now()
 	r.mu.Unlock()
 
-	r.send(ctx, s)
+	r.send(ctx, s, false)
 }
 
 // send 真正发请求：首次走 SendEditable 拿 msgID，之后走 Edit。
 //
+// terminal 标记这条是不是 Done 的终态快照。send 内部靠它 + terminalSent
+// 做两件事：① 终态发出后，任何非终态的 send 直接被吞掉，不再落地；
+// ② 终态自己永远无条件执行（哪怕 terminalSent 已经是 true —— 正常情况下
+// Done 只会调一次，这个分支只是防御性的，不依赖 Done 不会被重复调用）。
+//
+// 整个函数体在 sendMu 内执行，包括网络 IO：这把“判断该不该发”和“真正
+// 发出去”捏成一个不可分割的操作，是修掉终态被中间态覆盖这个问题的关键——
+// 没有它，判断和发送之间的空隙足够另一个 goroutine 插进来抢跑。
+// mu 依然只在读写共享字段的瞬间持有，IO 期间不持有 mu，这样其它 goroutine
+// 的只读操作（比如另一个 Update 判断节流）不会被网络延迟卡住。
+//
 // 失败只记日志、不返回错误 —— 进度是辅助信息，不该反过来把主流程搞挂。
-func (r *tgReporter) send(ctx context.Context, s Status) {
-	md := renderStatus(s)
+func (r *tgReporter) send(ctx context.Context, s Status, terminal bool) {
+	r.sendMu.Lock()
+	defer r.sendMu.Unlock()
 
 	r.mu.Lock()
+	if r.terminalSent && !terminal {
+		// 终态已经落地：这条迟到的中间态绝不能再改动消息，直接吞掉。
+		r.mu.Unlock()
+		return
+	}
 	msgID := r.msgID
 	r.mu.Unlock()
+
+	md := renderStatus(s)
 
 	var err error
 	if msgID == 0 {
@@ -197,6 +242,9 @@ func (r *tgReporter) send(ctx context.Context, s Status) {
 	// 无论成败都更新时间戳：失败往往也是被限速了，更该等。
 	r.mu.Lock()
 	r.lastSent = time.Now()
+	if terminal {
+		r.terminalSent = true
+	}
 	r.mu.Unlock()
 
 	if err != nil {

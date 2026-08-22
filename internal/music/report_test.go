@@ -3,6 +3,7 @@ package music
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -10,12 +11,19 @@ import (
 )
 
 // fakeEditor 记录所有调用，替代真实的 Telegram 客户端。
-// 加锁是因为节流用的 time.AfterFunc 会在另一个 goroutine 里回调。
+// 加锁是因为节流用的 time.AfterFunc 会在另一个 goroutine 里回调，
+// 并发测试里还会有多个业务 goroutine 直接并发调用 Update/Done。
 type fakeEditor struct {
 	mu      sync.Mutex
 	sends   []string // 每次 SendEditable 的内容
 	edits   []string // 每次 Edit 的内容
-	sendErr error    // 非 nil 时 SendEditable 返回它
+	editIDs []int    // 每次 Edit 用的 msgID，跟 edits 按下标一一对应；
+	// 用来验证不会有消息被"孤儿化"（连续两次 SendEditable 各开一条新消息，
+	// 之后 Edit 却只认得其中一条 msgID，另一条从此没人再编辑）。
+	calls []string // sends 和 edits 的合并时间线，按真实发生顺序追加；
+	// 单独两个切片看不出"谁在谁后面"，判断"终态是不是最后一条真实传输"
+	// 必须靠这个统一时间线。
+	sendErr error // 非 nil 时 SendEditable 返回它
 }
 
 func (f *fakeEditor) SendEditable(_ context.Context, _ int64, md string) (int, error) {
@@ -25,13 +33,16 @@ func (f *fakeEditor) SendEditable(_ context.Context, _ int64, md string) (int, e
 		return 0, f.sendErr
 	}
 	f.sends = append(f.sends, md)
+	f.calls = append(f.calls, md)
 	return 42, nil // 固定 msgID，方便断言后续 Edit 用的是它
 }
 
-func (f *fakeEditor) Edit(_ context.Context, _ int64, _ int, md string) error {
+func (f *fakeEditor) Edit(_ context.Context, _ int64, msgID int, md string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.edits = append(f.edits, md)
+	f.editIDs = append(f.editIDs, msgID)
+	f.calls = append(f.calls, md)
 	return nil
 }
 
@@ -190,5 +201,142 @@ func TestRenderStatusFailed(t *testing.T) {
 	})
 	if !strings.Contains(md, "模型未收敛") {
 		t.Errorf("失败态应展示错误原因:\n%s", md)
+	}
+}
+
+// terminalMarker 是下面两个并发测试里终态快照专用的可识别标记：放进 Query
+// 字段，跟并发 Update 用的固定 Query 区分开，这样才能从渲染结果里认出
+// "这一条究竟是不是 Done 发的那条"，而不用去猜并发的具体调度顺序。
+const terminalMarker = "终态标记ZZ"
+
+// TestReporterConcurrentDoneNeverOverwritten 是补给 Critical 1 的回归测试：
+// 一批 Update 跟 Done 真正并发地对同一个 tgReporter 灌快照（不是顺序调用），
+// 覆盖"goroutine A 的 Update 通过了 finished 检查、还没来得及真正发送，
+// goroutine B 的 Done 就已经把终态发出去了"这种交错。
+//
+// 断言点分两块：
+//  1. 不管调度怎么交错，真正落地的最后一次传输永远是终态内容——这是设计上
+//     唯一不能退让的不变式，靠 send() 里的 sendMu + terminalSent 保证，
+//     而不是靠"运气好没撞上"。
+//  2. 不会有消息被孤儿化：SendEditable 全程只应该被调用一次（否则出现第二条
+//     没人再编辑的孤儿消息），后续所有 Edit 用的都是同一个 msgID。
+func TestReporterConcurrentDoneNeverOverwritten(t *testing.T) {
+	// 多跑几轮：单次并发测试可能靠运气就通过，多轮 + 较大的 goroutine 数量
+	// 才能有把握真的把交错窗口踩到。
+	for round := 0; round < 20; round++ {
+		fe := &fakeEditor{}
+		// 节流拉到 0：让每个并发 Update 都走"立即发"分支，
+		// 而不是被节流吞进 pending，这样才能最大化跟 Done 抢跑的窗口。
+		r := newTGReporter(fe, 1, 0)
+		ctx := context.Background()
+
+		const n = 100
+		var wg sync.WaitGroup
+		wg.Add(n + 1)
+		start := make(chan struct{}) // 关闭它当发令枪，让所有 goroutine 尽量同时起跑
+		for i := 0; i < n; i++ {
+			i := i
+			go func() {
+				defer wg.Done()
+				<-start
+				r.Update(ctx, Status{Query: "晴天", Searches: i})
+			}()
+		}
+		go func() {
+			defer wg.Done()
+			<-start
+			r.Done(ctx, Status{Query: terminalMarker, Stage: StageDone})
+		}()
+		close(start)
+		wg.Wait()
+
+		fe.mu.Lock()
+		if len(fe.sends) != 1 {
+			fe.mu.Unlock()
+			t.Fatalf("round %d: SendEditable 调用 %d 次, want 1（多出来的是孤儿消息）", round, len(fe.sends))
+		}
+		if len(fe.calls) == 0 {
+			fe.mu.Unlock()
+			t.Fatalf("round %d: 没有任何调用被记录", round)
+		}
+		last := fe.calls[len(fe.calls)-1]
+		if !strings.Contains(last, terminalMarker) {
+			timeline := strings.Join(fe.calls, "\n---\n")
+			fe.mu.Unlock()
+			t.Fatalf("round %d: 最后一次真实传输不是终态内容:\n%s\n完整时间线:\n%s", round, last, timeline)
+		}
+		for i, id := range fe.editIDs {
+			if id != 42 {
+				fe.mu.Unlock()
+				t.Fatalf("round %d: 第 %d 次 Edit 用的 msgID=%d, want 42（说明消息被孤儿化了）", round, i, id)
+			}
+		}
+		fe.mu.Unlock()
+	}
+}
+
+// TestReporterConcurrentUpdatesCoalesce 是补给 Critical 2 的回归测试：
+// 同一节流窗口内并发涌入的 Update，只应该产生"首发已经发过的那一次"真实
+// 传输，不应该因为并发而让节流闸门被同时绕过好几次。
+//
+// 旧实现的漏洞是 lastSent 只在 IO 完成后才写回：并发的 Update 在第一次 IO
+// 还没做完时各自算出的 wait 都基于同一份"过期"的 lastSent，于是都判定
+// <=0、都直接发一次真实请求。这里验证修复后（gate 通过的瞬间就在锁内
+// 占住 lastSent）不会再复现这个问题。
+func TestReporterConcurrentUpdatesCoalesce(t *testing.T) {
+	for round := 0; round < 10; round++ {
+		fe := &fakeEditor{}
+		const throttle = 200 * time.Millisecond
+		r := newTGReporter(fe, 1, throttle)
+		ctx := context.Background()
+
+		// 顺序发第一条，占住这个节流窗口的起点，同时确保 msgID 已经拿到。
+		r.Update(ctx, Status{Query: "晴天", Searches: 0})
+		if sends, edits := fe.counts(); sends != 1 || edits != 0 {
+			t.Fatalf("round %d: 首发之后 sends=%d edits=%d, want 1,0", round, sends, edits)
+		}
+
+		// 紧接着一大批并发 Update，全部应该落在同一节流窗口内被合并进 pending，
+		// 而不是各自触发一次真实传输。
+		const n = 50
+		var wg sync.WaitGroup
+		wg.Add(n)
+		start := make(chan struct{})
+		for i := 1; i <= n; i++ {
+			i := i
+			go func() {
+				defer wg.Done()
+				<-start
+				r.Update(ctx, Status{Query: "晴天", Searches: i})
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		if sends, edits := fe.counts(); sends != 1 || edits != 0 {
+			t.Fatalf("round %d: 并发窗口内 sends=%d edits=%d, want 1,0（应全部合并等补发，不应有并发的真实传输）", round, sends, edits)
+		}
+
+		// 并发批次全部完成之后（happens-after，由 wg.Wait() 保证），再顺序发
+		// 一条带唯一标记的快照。真正并发写 pending 时"谁最后写入"本就没有
+		// 确定的顺序，不该拿它做断言；这条顺序调用则确定性地成为 pending
+		// 里最新的一份，用来验证补发用的是"当前最新"而不是某个陈旧快照。
+		// 注意：不能用 "-" 之类的 MarkdownV2 特殊字符拼标记——渲染时会被转义成
+		// "\-"，导致原样子串匹配失败；这里只用中文字和数字，二者都不转义。
+		tailMarker := "尾标记轮次" + strconv.Itoa(round)
+		r.Update(ctx, Status{Query: tailMarker, Searches: n + 1})
+
+		time.Sleep(throttle * 3)
+
+		sends, edits := fe.counts()
+		if sends != 1 || edits != 1 {
+			t.Fatalf("round %d: 窗口结束后 sends=%d edits=%d, want 1,1（只应该补发一次）", round, sends, edits)
+		}
+		fe.mu.Lock()
+		last := fe.edits[0]
+		fe.mu.Unlock()
+		if !strings.Contains(last, tailMarker) {
+			t.Fatalf("round %d: 补发内容里没有窗口内最后一次顺序调用的标记 %q:\n%s", round, tailMarker, last)
+		}
 	}
 }
