@@ -5,6 +5,8 @@ services:
     volumes:
       # 使用相对路径挂载本地目录（推荐）
       - ./config:/config
+      # 推送记录数据库；与只读的配置分开，职责清晰
+      - ./data:/data
     environment:
       - RUST_CONFIG_PATH=/config/config.toml
     #      - RUST_LOG=info

@@ -1,5 +1,5 @@
 # 使用多阶段构建：Go 构建器 + Python sidecar 运行时
-FROM golang:1.22-alpine AS go-builder
+FROM golang:1.25-alpine AS go-builder
 WORKDIR /src
 
 # 优先复制 go.mod / go.sum 以利用 layer 缓存
@@ -24,8 +24,9 @@ RUN pip install --no-cache-dir -r ./page_content_extractor/requirements.txt
 # 从Go构建阶段复制编译好的二进制文件
 COPY --from=go-builder /out/news2tg /app/news2tg
 
-# 创建配置目录
-RUN mkdir /config
+# 创建配置目录和数据目录（数据目录在 compose 里会被宿主机卷覆盖，
+# 但不挂载时也需要它存在，否则 SQLite 建库会失败）
+RUN mkdir /config /data
 
 # 沿用旧环境变量名以保持 docker-compose.yml 兼容
 ENV RUST_CONFIG_PATH=/config/config.toml

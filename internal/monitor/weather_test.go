@@ -145,11 +145,11 @@ func TestFetchCity(t *testing.T) {
 
 // —— 测试用 fake ——
 
-type fakeNotifier struct{ batch []string }                                               // 捕获 NotifyBatch 的入参
+type fakeNotifier struct{ batch []string }                                               // 捕获发出去的消息
 func (f *fakeNotifier) Notify(ctx context.Context, content string) error                 { return nil }
 func (f *fakeNotifier) NotifyTo(ctx context.Context, chatID int64, content string) error { return nil }
-func (f *fakeNotifier) NotifyBatch(ctx context.Context, contents []string) error {
-	f.batch = contents
+func (f *fakeNotifier) NotifyMarkdown(ctx context.Context, content string) error {
+	f.batch = append(f.batch, content)
 	return nil
 }
 

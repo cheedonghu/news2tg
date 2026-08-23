@@ -221,8 +221,8 @@ func (w *Weather) pushOnce(ctx context.Context, cfg *config.Config, date string)
 
 	msg := buildMessage(date, items, advice, w.mentions)
 
-	// 单条也走 NotifyBatch：它发预渲染 MarkdownV2、不整体转义，正合适。
-	return w.notifier.NotifyBatch(ctx, []string{msg})
+	// 单条预渲染 MarkdownV2，正对应 NotifyMarkdown 的语义。
+	return w.notifier.NotifyMarkdown(ctx, msg)
 }
 
 // Run 实现 monitor.Monitor：每天定点推送一次天气。
@@ -261,7 +261,7 @@ func (w *Weather) Run(ctx context.Context, cfg *config.Config) error {
 		// 若用机器本地时间（容器多为 UTC），标题日期会显示成前一天。
 		date := time.Now().In(loc).Format("2006-01-02")
 		if err := w.pushOnce(cctx, cfg, date); err != nil {
-			// pushOnce 里的 NotifyBatch 在 ctx 取消时会返回 ctx.Err() —— 那属于正常关闭。
+			// pushOnce 里的 NotifyMarkdown 在 ctx 取消时会返回 ctx.Err() —— 那属于正常关闭。
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}

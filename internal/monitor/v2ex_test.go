@@ -6,11 +6,15 @@
 package monitor
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing" // Go 官方测试框架，提供 *testing.T、t.Run、t.Fatalf 等
 	"time"
 
 	"github.com/cheedonghu/news2tg/internal/config"
 	"github.com/cheedonghu/news2tg/internal/model"
+	"github.com/cheedonghu/news2tg/internal/store"
 )
 
 // 测试函数命名规范：必须以 Test 开头 + 大写字母，参数必须是 *testing.T。
@@ -115,33 +119,73 @@ func TestFilterNewTopic(t *testing.T) {
 	}
 }
 
-// TestCleanOldURLs 验证按日期滑窗清理的边界。
-// cutoff = now - 5 天；条件是 `date < cutoff`，所以"等于 cutoff"应保留。
-func TestCleanOldURLs(t *testing.T) {
-	// time.Date 显式构造时间，避免依赖系统当前时间（让测试可重复）。
-	// 参数顺序：年, 月, 日, 时, 分, 秒, 纳秒, Location。
-	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
-	// cutoff = 2026-05-11
+// TestFetchDedup 用 httptest 假装 v2ex API，配真实的临时 SQLite 库，
+// 验证两件事：库里已有的 URL 不再产出；同一 URL 同时出现在热帖和新帖时只产出一次。
+//
+// V2EX 的 fetch 只调 v2ex 自己的 HTTP 接口，不涉及 Python sidecar，所以能这样测。
+func TestFetchDedup(t *testing.T) {
+	// 两个端点返回的 JSON：/hot 有 t/1 和 t/2；/latest 有 t/2（与热帖重复）和 t/3。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/hot":
+			w.Write([]byte(`[{"id":1,"title":"帖子一","url":"https://v2ex.com/t/1","node":{"name":"share"}},
+			                 {"id":2,"title":"帖子二","url":"https://v2ex.com/t/2","node":{"name":"share"}}]`))
+		case "/latest":
+			w.Write([]byte(`[{"id":2,"title":"帖子二","url":"https://v2ex.com/t/2","node":{"name":"share"}},
+			                 {"id":3,"title":"帖子三","url":"https://v2ex.com/t/3","node":{"name":"share"}}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
 
-	// 直接用 &V2EX{...} 构造，绕过 NewV2EX —— 测试只关心 pushedURLs 这个字段，
-	// httpClient / notifier 用不上，留零值（nil）也无所谓，因为我们不会调到它们。
-	v := &V2EX{pushedURLs: map[string]string{
-		"https://v2ex.com/t/old":    "20260510", // 早于 cutoff → 应删
-		"https://v2ex.com/t/edge":   "20260511", // 等于 cutoff → 应保留（date < cutoff 为 false）
-		"https://v2ex.com/t/recent": "20260515", // 晚于 cutoff → 应保留
-	}}
+	st, _ := newTestStore(t) // 复用 deliver_test.go 里的辅助函数（同一个包）
+	ctx := context.Background()
 
-	v.cleanOldURLs(now)
-
-	// 用"逗号 ok"语法判断 key 是否存在。
-	// _, ok := m[k]：值丢弃（如果不需要），ok 是 bool。
-	if _, ok := v.pushedURLs["https://v2ex.com/t/old"]; ok {
-		t.Errorf("超过 5 天的记录应该被删除") // Errorf：报错但继续往下跑
+	// 预先把 t/1 标记成推过，验证"库里已有的不再产出"。
+	if err := st.MarkPushed(ctx, store.Record{
+		Source: "v2ex", ExternalID: "https://v2ex.com/t/1",
+		Title: "帖子一", URL: "https://v2ex.com/t/1",
+		ChatID: "-100123", PushedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("预置记录失败: %v", err)
 	}
-	if _, ok := v.pushedURLs["https://v2ex.com/t/edge"]; !ok {
-		t.Errorf("正好等于 cutoff 的记录应该保留")
+
+	// 直接构造 V2EX（同包测试可以访问私有字段），把端点指向 httptest 服务器。
+	m := &V2EX{
+		httpClient: srv.Client(),
+		store:      st,
+		hotURL:     srv.URL + "/hot",
+		latestURL:  srv.URL + "/latest",
 	}
-	if _, ok := v.pushedURLs["https://v2ex.com/t/recent"]; !ok {
-		t.Errorf("近期记录不应被删除")
+	cfg := &config.Config{
+		Features: config.Features{
+			V2exFetchHot:    true,
+			V2exFetchLatest: true,
+			// 关键字/节点都留空 = 该维度不限制，filterNewTopic 恒为 true
+		},
+	}
+
+	results, err := m.fetch(ctx, cfg)
+	if err != nil {
+		t.Fatalf("fetch 报错: %v", err)
+	}
+
+	// 期望只剩 t/2 和 t/3：t/1 已推过被过滤，t/2 出现两次但只保留一次。
+	if len(results) != 2 {
+		t.Fatalf("期望 2 条结果，实际 %d 条: %+v", len(results), results)
+	}
+	gotURLs := map[string]bool{}
+	for _, r := range results {
+		gotURLs[r.ExternalID] = true
+		if r.Source != "v2ex" {
+			t.Errorf("Source = %q, want %q", r.Source, "v2ex")
+		}
+	}
+	if gotURLs["https://v2ex.com/t/1"] {
+		t.Errorf("已推过的 t/1 不应出现在结果里")
+	}
+	if !gotURLs["https://v2ex.com/t/2"] || !gotURLs["https://v2ex.com/t/3"] {
+		t.Errorf("t/2 和 t/3 都应出现，实际: %v", gotURLs)
 	}
 }

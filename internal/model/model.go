@@ -8,9 +8,12 @@ package model
 // 字段全部首字母大写 = 包外可见（其它包要读写）。
 // 没有 toml/json tag：因为它不是从配置或网络反序列化来的，是程序内部用。
 type NotifyBase struct {
+	Source                    string // 来源标识："v2ex" | "hackernews"，写推送记录用
+	ExternalID                string // 该来源内的唯一标识：v2ex 填帖子 URL，hn 填帖子数字 id
 	URL                       string // 帖子主页 URL
 	OriginURL                 string // 原文链接（HN 才有，v2ex 是空）
-	Title                     string // 标题（同时也用作消息头里的一段）
+	Title                     string // 消息抬头。v2ex 是帖子标题；**HN 是分类名**（如"Hacker News 热帖推送"）
+	PostTitle                 string // 帖子真实标题。v2ex 与 Title 相同；HN 从帖子页解析而来
 	Content                   string // 最终要发送的消息正文（已经拼好模板）
 	ContentTransferedByAIFlag bool   // 标记：true=已交给 AI 处理过 / false=未处理（兜底文案）
 }

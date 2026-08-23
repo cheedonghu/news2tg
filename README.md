@@ -43,5 +43,8 @@ go build -o bin/news2tg ./cmd/news2tg
 - 主程序：Go（goroutine + `time.Ticker` 替代 `tokio`）
 - 依赖：`go-telegram-bot-api/v5`、`sashabaranov/go-openai`（DeepSeek 兼容 OpenAI 协议）、`PuerkitoBio/goquery`、`BurntSushi/toml`
 - HN 正文提取：仍由 Python sidecar [hacker-news-digest](https://github.com/cheedonghu/hacker-news-digest) 提供，通过 `127.0.0.1:50051` HTTP 调用
+- Telegram 指令：`/summary <网址>` 总结网页并推送到频道；`/music <歌曲描述>` 从 mp3.pm
+  搜索下载歌曲并经 WebDAV 上传到 alist 挂载的网盘，进度以单条消息原地编辑的方式实时回报。
+  两条指令都仅限 `[telegram] admin_ids` 白名单用户。
 
 ## todo
