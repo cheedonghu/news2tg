@@ -42,17 +42,26 @@ func (f *fakeFetcher) Fetch(_ context.Context, st *Status, dir string, _ Reporte
 type fakeUploader struct {
 	states   []TargetStatus
 	err      error
-	gotFile  string // 记录 Runner 传进来的文件名，用于断言 BuildFilename 被用上
-	gotLocal string
+	gotFiles []UploadFile // 记录 Runner 传进来的文件列表，用于断言组装逻辑
 }
 
-func (f *fakeUploader) Upload(_ context.Context, localPath, filename string, onProgress func([]TargetStatus)) ([]TargetStatus, error) {
-	f.gotLocal = localPath
-	f.gotFile = filename
+func (f *fakeUploader) Upload(_ context.Context, files []UploadFile, onProgress func([]TargetStatus)) ([]TargetStatus, error) {
+	f.gotFiles = files
 	if onProgress != nil {
 		onProgress(f.states)
 	}
 	return f.states, f.err
+}
+
+// mp3Name 返回文件列表里那个 mp3 的文件名，没有则返回空串。
+// 既有用例断言的是"上传文件名对不对"，用这个小助手迁移最省事。
+func (f *fakeUploader) mp3Name() string {
+	for _, x := range f.gotFiles {
+		if !x.Optional {
+			return x.Filename
+		}
+	}
+	return ""
 }
 
 // newTestRunner 组装注入了 fake 的 Runner。
@@ -74,8 +83,8 @@ func TestRunnerHappyPath(t *testing.T) {
 		t.Fatalf("Run 意外报错: %v", err)
 	}
 
-	if u.gotFile != "周杰伦 - 晴天.mp3" {
-		t.Errorf("上传文件名 = %q, want %q", u.gotFile, "周杰伦 - 晴天.mp3")
+	if u.mp3Name() != "周杰伦 - 晴天.mp3" {
+		t.Errorf("上传文件名 = %q, want %q", u.mp3Name(), "周杰伦 - 晴天.mp3")
 	}
 	// 临时目录必须被删掉，不能在系统临时目录里堆 mp3。
 	if _, err := os.Stat(f.gotDir); !os.IsNotExist(err) {
@@ -102,7 +111,7 @@ func TestRunnerFetchFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("agent 失败时 Run 应返回错误")
 	}
-	if u.gotFile != "" {
+	if len(u.gotFiles) != 0 {
 		t.Error("agent 失败后不该再尝试上传")
 	}
 	if _, sErr := os.Stat(f.gotDir); !os.IsNotExist(sErr) {

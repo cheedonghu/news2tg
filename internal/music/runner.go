@@ -32,7 +32,7 @@ type fetcher interface {
 }
 
 type uploader interface {
-	Upload(ctx context.Context, localPath, filename string, onProgress func([]TargetStatus)) ([]TargetStatus, error)
+	Upload(ctx context.Context, files []UploadFile, onProgress func([]TargetStatus)) ([]TargetStatus, error)
 }
 
 // Runner 把 agent、上传、进度上报串成一次完整的 /music 任务。
@@ -103,7 +103,14 @@ func (r *Runner) Run(ctx context.Context, chatID int64, query string) error {
 	// 锁只护住共享字段的读写，不覆盖 rep.Update 的网络 IO：Update 里还有
 	// Telegram 的节流/发送逻辑，锁着它会让并发的另一次回调白等一次 IO。
 	var stMu sync.Mutex
-	targets, upErr := r.uploader.Upload(ctx, track.LocalPath, filename, func(ts []TargetStatus) {
+	// 目前只有 mp3 一个文件；Task 8 会在这里追加歌词。
+	files := []UploadFile{{
+		LocalPath:   track.LocalPath,
+		Filename:    filename,
+		ContentType: "audio/mpeg",
+	}}
+
+	targets, upErr := r.uploader.Upload(ctx, files, func(ts []TargetStatus) {
 		// 每个目标状态一变就刷进度。Reporter 内部会节流，这里放心调。
 		stMu.Lock()
 		st.Targets = ts

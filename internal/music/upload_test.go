@@ -24,6 +24,12 @@ func writeTempMP3(t *testing.T, content string) string {
 	return p
 }
 
+// mp3Only 把"一个 mp3 文件"包成 Upload 现在要的切片形态。
+// 既有那些只关心单文件行为的用例用它迁移，改动量最小。
+func mp3Only(path, filename string) []UploadFile {
+	return []UploadFile{{LocalPath: path, Filename: filename, ContentType: "audio/mpeg"}}
+}
+
 // davRecorder 是一个假 WebDAV 服务端，记录收到的 PUT。
 type davRecorder struct {
 	mu    sync.Mutex
@@ -69,7 +75,7 @@ func TestUploadBothSucceed(t *testing.T) {
 
 	path := writeTempMP3(t, "ID3fake")
 	const filename = "周杰伦 - 晴天.mp3" // 中文 + 空格，两种都必须被转义
-	got, err := u.Upload(context.Background(), path, filename, nil)
+	got, err := u.Upload(context.Background(), mp3Only(path, filename), nil)
 	if err != nil {
 		t.Fatalf("Upload 意外报错: %v", err)
 	}
@@ -141,7 +147,7 @@ func TestUploadEscapesPathOnlySpecials(t *testing.T) {
 
 			u := NewUploader(srv.Client(), []Target{{Name: "A", URL: srv.URL + "/dav"}}, "alist", "pw")
 
-			got, err := u.Upload(context.Background(), writeTempMP3(t, "x"), filename, nil)
+			got, err := u.Upload(context.Background(), mp3Only(writeTempMP3(t, "x"), filename), nil)
 			if err != nil {
 				t.Fatalf("Upload 意外报错: %v", err)
 			}
@@ -178,7 +184,7 @@ func TestUploadSeedsPendingState(t *testing.T) {
 
 	var mu sync.Mutex
 	var first []TargetStatus
-	_, err := u.Upload(context.Background(), writeTempMP3(t, "x"), "a.mp3", func(ts []TargetStatus) {
+	_, err := u.Upload(context.Background(), mp3Only(writeTempMP3(t, "x"), "a.mp3"), func(ts []TargetStatus) {
 		mu.Lock()
 		defer mu.Unlock()
 		if first == nil {
@@ -214,7 +220,7 @@ func TestUploadPartialFailure(t *testing.T) {
 		{Name: "OneDrive", URL: badSrv.URL + "/dav"},
 	}, "alist", "pw")
 
-	got, err := u.Upload(context.Background(), writeTempMP3(t, "x"), "a.mp3", nil)
+	got, err := u.Upload(context.Background(), mp3Only(writeTempMP3(t, "x"), "a.mp3"), nil)
 	if err != nil {
 		t.Fatalf("一成一败应算成功，却返回错误: %v", err)
 	}
@@ -239,7 +245,7 @@ func TestUploadAllFail(t *testing.T) {
 		{Name: "B", URL: badSrv.URL + "/dav"},
 	}, "alist", "pw")
 
-	got, err := u.Upload(context.Background(), writeTempMP3(t, "x"), "a.mp3", nil)
+	got, err := u.Upload(context.Background(), mp3Only(writeTempMP3(t, "x"), "a.mp3"), nil)
 	if err == nil {
 		t.Fatal("全部目标失败时应返回错误")
 	}
@@ -263,7 +269,7 @@ func TestUploadProgressCallback(t *testing.T) {
 
 	var mu sync.Mutex
 	var calls int
-	_, err := u.Upload(context.Background(), writeTempMP3(t, "x"), "a.mp3", func(ts []TargetStatus) {
+	_, err := u.Upload(context.Background(), mp3Only(writeTempMP3(t, "x"), "a.mp3"), func(ts []TargetStatus) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls++
@@ -337,7 +343,7 @@ func TestUploadSingleTargetSucceeds(t *testing.T) {
 		{Name: "阿里云盘", URL: srv.URL + "/dav/aliyun/Music"},
 	}, "alist", "pw")
 
-	got, err := u.Upload(context.Background(), writeTempMP3(t, "ID3fake"), "a.mp3", nil)
+	got, err := u.Upload(context.Background(), mp3Only(writeTempMP3(t, "ID3fake"), "a.mp3"), nil)
 	if err != nil {
 		t.Fatalf("单目标上传意外失败: %v", err)
 	}
@@ -365,7 +371,7 @@ func TestUploadSingleTargetFails(t *testing.T) {
 		{Name: "阿里云盘", URL: badSrv.URL + "/dav"},
 	}, "alist", "pw")
 
-	got, err := u.Upload(context.Background(), writeTempMP3(t, "x"), "a.mp3", nil)
+	got, err := u.Upload(context.Background(), mp3Only(writeTempMP3(t, "x"), "a.mp3"), nil)
 	if err == nil {
 		t.Fatal("唯一的目标失败时应当返回 error")
 	}
@@ -403,5 +409,114 @@ func TestBuildLyricFilenameMatchesMP3(t *testing.T) {
 		if !strings.HasSuffix(lrc, ".lrc") {
 			t.Errorf("BuildLyricFilename 结果 %q 应以 .lrc 结尾", lrc)
 		}
+	}
+}
+
+// TestUploadOptionalFileFailureKeepsTargetOK 是本次改动的核心语义：
+// 可选文件（歌词）传失败时，目标仍然算成功，只带一句 Warn。
+//
+// 判别力：把 Optional 判断去掉后，这条会变成 TargetFailed —— 也就是
+// 一个附赠的 .lrc 没传上去就把已经传好的歌判成失败，正是要避免的事。
+func TestUploadOptionalFileFailureKeepsTargetOK(t *testing.T) {
+	// 服务端：.mp3 收下，.lrc 一律 507。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		if strings.HasSuffix(r.URL.Path, ".lrc") {
+			w.WriteHeader(http.StatusInsufficientStorage)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	t.Cleanup(srv.Close)
+
+	u := NewUploader(srv.Client(), []Target{{Name: "阿里云盘", URL: srv.URL + "/dav"}}, "alist", "pw")
+
+	files := []UploadFile{
+		{LocalPath: writeTempMP3(t, "ID3fake"), Filename: "A - T.mp3", ContentType: "audio/mpeg"},
+		{LocalPath: writeTempMP3(t, "[ti:T]"), Filename: "A - T.lrc", ContentType: "text/plain; charset=utf-8", Optional: true},
+	}
+	got, err := u.Upload(context.Background(), files, nil)
+	if err != nil {
+		t.Fatalf("可选文件失败不该让整体报错: %v", err)
+	}
+	if len(got) != 1 || got[0].State != TargetOK {
+		t.Fatalf("目标状态 = %+v, want TargetOK", got)
+	}
+	if got[0].Warn == "" {
+		t.Error("可选文件失败必须留下 Warn，否则用户不知道歌词没传上去")
+	}
+	if got[0].Err != "" {
+		t.Errorf("目标成功时 Err 应为空，实际 %q", got[0].Err)
+	}
+}
+
+// TestUploadRequiredFailureSkipsRest 验证：必传文件失败后，
+// **不再**发起该目标后续文件的 PUT —— 这个目标已经废了，
+// 继续传歌词只是白占带宽和一次请求。
+func TestUploadRequiredFailureSkipsRest(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.WriteHeader(http.StatusForbidden) // mp3 就失败
+	}))
+	t.Cleanup(srv.Close)
+
+	u := NewUploader(srv.Client(), []Target{{Name: "A", URL: srv.URL + "/dav"}}, "alist", "pw")
+
+	files := []UploadFile{
+		{LocalPath: writeTempMP3(t, "x"), Filename: "a.mp3", ContentType: "audio/mpeg"},
+		{LocalPath: writeTempMP3(t, "y"), Filename: "a.lrc", ContentType: "text/plain; charset=utf-8", Optional: true},
+	}
+	got, err := u.Upload(context.Background(), files, nil)
+	if err == nil {
+		t.Fatal("唯一目标的必传文件失败时整体应报错")
+	}
+	if got[0].State != TargetFailed {
+		t.Errorf("目标状态 = %v, want TargetFailed", got[0].State)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) != 1 {
+		t.Errorf("必传文件失败后不该再传后续文件，实际发了 %d 次请求: %v", len(paths), paths)
+	}
+}
+
+// TestUploadFileContentTypes 验证：每个文件用自己的 Content-Type，
+// 不再是写死的 audio/mpeg。歌词是文本，声明成 audio/mpeg 会让某些
+// WebDAV 后端存成二进制、下载回来变成乱码。
+func TestUploadFileContentTypes(t *testing.T) {
+	var mu sync.Mutex
+	types := map[string]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		mu.Lock()
+		types[filepath.Ext(r.URL.Path)] = r.Header.Get("Content-Type")
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+	}))
+	t.Cleanup(srv.Close)
+
+	u := NewUploader(srv.Client(), []Target{{Name: "A", URL: srv.URL + "/dav"}}, "alist", "pw")
+
+	files := []UploadFile{
+		{LocalPath: writeTempMP3(t, "x"), Filename: "a.mp3", ContentType: "audio/mpeg"},
+		{LocalPath: writeTempMP3(t, "y"), Filename: "a.lrc", ContentType: "text/plain; charset=utf-8", Optional: true},
+	}
+	if _, err := u.Upload(context.Background(), files, nil); err != nil {
+		t.Fatalf("Upload 意外报错: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if types[".mp3"] != "audio/mpeg" {
+		t.Errorf(".mp3 的 Content-Type = %q, want audio/mpeg", types[".mp3"])
+	}
+	if types[".lrc"] != "text/plain; charset=utf-8" {
+		t.Errorf(".lrc 的 Content-Type = %q, want text/plain; charset=utf-8", types[".lrc"])
 	}
 }
