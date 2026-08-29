@@ -257,6 +257,12 @@ func (m *MusicSo) play(ctx context.Context, c Candidate) (musicSoPlayResp, error
 	}
 	backend, id := parts[0], parts[1]
 
+	// 日志放在 id 拆分成功之后打：这样 "backend" 这个分组维度是真实可信的
+	// （拆分失败时上面已经直接 return 了，不会打出一条 backend 是空串的日志）。
+	// Download 和 Lyric 都会走到这里，所以这一条日志天然覆盖两个调用方，
+	// 不需要在各自的方法里重复打一遍几乎一样的内容。
+	slog.InfoContext(ctx, "开始请求 musicso play.php", "id", id, "backend", backend)
+
 	playURL := fmt.Sprintf("%s/api/play.php?id=%s&type=%s",
 		strings.TrimRight(m.baseURL, "/"), url.QueryEscape(id), url.QueryEscape(backend))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, playURL, nil)
@@ -308,7 +314,9 @@ func (m *MusicSo) play(ctx context.Context, c Candidate) (musicSoPlayResp, error
 // 细节都在 play 里）。好在换来的 CDN 直链本身**不需要任何 cookie**（实测），
 // 所以第二跳是裸 GET —— 也别给它带上 cookie，那等于把会话泄漏给第三方 CDN。
 func (m *MusicSo) Download(ctx context.Context, c Candidate, w io.Writer) (int64, error) {
-	slog.InfoContext(ctx, "开始从 musicso 下载", "id", c.ID, "title", c.Title)
+	// "开始请求 musicso play.php" 那条日志（带 id/backend 分组）已经挪到
+	// play 方法里打了，这里不再重复打一条几乎一样的内容——Download 和
+	// Lyric 共用同一跳，日志只在真正发起请求的那一处打一次就够。
 
 	// ① 用会话换直链。
 	pr, err := m.play(ctx, c)
@@ -349,9 +357,15 @@ func (m *MusicSo) Download(ctx context.Context, c Candidate, w io.Writer) (int64
 
 // Lyric 取回该候选的歌词。
 //
-// 复用 Download 的第一跳：/api/play.php 的响应里本来就带着 lrc 字段，
-// 一次请求同时给出直链和歌词。所以"从 musicso 下的歌自带歌词"这条快路径
-// 不需要任何额外的搜索或匹配 —— 手上就有 id 和会话。
+// 复用 Download 第一跳打的同一个接口：/api/play.php 的响应里本来就带着
+// lrc 字段，理论上一次请求就能同时给出直链和歌词。但 Lyric 是独立方法、
+// 独立调用，实际落地是**每首歌对 play.php 多打一次**（Download 一次、
+// Lyric 又一次）—— 不是真的"一次请求两用"，只是省下了另起一套解析逻辑。
+// 这个代价可以接受：play.php 是一次几百毫秒的 JSON 请求，多一次不心疼；
+// 它依赖的是搜索那一跳下发的 PHPSESSID 在 mp3 下载完之后仍然有效——
+// PHP 会话默认 24 分钟才过期，从下载到取词这点间隔远远够用。
+// 所以"从 musicso 下的歌自带歌词"这条快路径不需要任何额外的搜索或匹配
+// —— 手上就有 id 和会话，只是要多打一跳而已。
 //
 // lrc 的形状已于 2026-08-29 实测确认：**内联的标准 LRC 正文**，含
 // [ti:]/[ar:]/[al:]/[offset:] 元信息行与 [mm:ss.xx] 时间戳，JSON 里

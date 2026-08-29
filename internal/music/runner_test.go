@@ -70,9 +70,15 @@ type fakeLyrics struct {
 	status  LyricStatus
 	gotDir  string
 	gotName string
+	// gotTrack 记下 Runner 实际传进来的 *Track，用于断言"Runner 有没有把
+	// Fetch 返回的那个 Track 转手交给 Save"这一跳。这一跳此前没有任何
+	// 断言守着（参数直接写成 `_ *Track` 丢弃），哪天这个实参被写错成
+	// nil 或别的 Track，所有测试照样全绿，线上表现是每首歌都悄悄没歌词。
+	gotTrack *Track
 }
 
-func (f *fakeLyrics) Save(_ context.Context, _ *Track, dir, filename string) (string, LyricStatus) {
+func (f *fakeLyrics) Save(_ context.Context, t *Track, dir, filename string) (string, LyricStatus) {
+	f.gotTrack = t
 	f.gotDir = dir
 	f.gotName = filename
 	return f.path, f.status
@@ -250,6 +256,14 @@ func TestRunnerUploadsLyricAsOptional(t *testing.T) {
 	}
 	if l.gotName != "周杰伦 - 晴天.lrc" {
 		t.Errorf("传给 Save 的文件名 = %q, want 周杰伦 - 晴天.lrc", l.gotName)
+	}
+	// 核心断言：Runner 传给 Save 的 *Track 必须就是 Fetch 返回的那一个
+	// （也就是 f.track，fakeFetcher 里那个）。这一跳此前完全没有断言，
+	// 万一 Runner 里传错成 nil 或另造一个 Track，取词凭据（src/cand）
+	// 就全丢了，但因为 Save 从不返回 error，测试和线上都不会有任何报错，
+	// 只会表现成"每首歌都悄悄没有歌词"。
+	if l.gotTrack != f.track {
+		t.Errorf("传给 Save 的 Track = %p, want Fetch 返回的那个 Track %p", l.gotTrack, f.track)
 	}
 }
 

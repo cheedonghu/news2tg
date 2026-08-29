@@ -69,6 +69,27 @@ const (
 	LyricFailed                        // 请求/解析/落盘出错
 )
 
+// String 让 LyricState 在日志里打出人话，而不是裸整数。
+//
+// 起因：runner.go 的 slog.InfoContext(..., "lyric", lyricSt.State) 若没有
+// 这个方法，JSON 日志里就是 "lyric":0，排障时完全认不出对应哪个状态。
+// slog 遇到实现了 fmt.Stringer 的值会自动调用它，不需要在调用点做任何改动。
+func (s LyricState) String() string {
+	switch s {
+	case LyricUnsupported:
+		return "不供词"
+	case LyricMissing:
+		return "未收录"
+	case LyricOK:
+		return "已获取"
+	case LyricFailed:
+		return "获取失败"
+	default:
+		// 兜底带上数字，方便对照上面的 iota 定义排查是不是漏改了这个方法。
+		return fmt.Sprintf("未知(%d)", int(s))
+	}
+}
+
 // LyricStatus 是取歌词这一步的快照。
 //
 // 为什么是四态而不是一个 bool：见 lyric.go 里 errLyricUnsupported 的注释 ——
@@ -487,8 +508,16 @@ func renderLyricLine(l LyricStatus, t *Track) string {
 		return "➖ " + esc("歌词："+src+" 不提供")
 	case LyricMissing:
 		return "➖ " + esc("歌词：站点未收录")
-	default: // LyricFailed
+	case LyricFailed:
 		return "⚠️ " + esc("歌词获取失败: "+tools.TruncateUTF8(l.Err, 80))
+	default:
+		// 显式列出四个已知状态，default 只兜将来新增的状态（比如某天多一个
+		// LyricXxx）——写成 `default: // LyricFailed` 会让新状态被静默地
+		// 渲染成"歌词获取失败"，界面上看不出任何异常，只有本该看到的新文案
+		// 消失了。这里用带数字的兜底文案，日志/截图排障时至少能定位到
+		// 是哪个未知枚举值，而不是伪装成一个已知状态。
+		// 不 panic：这个函数跑在 /music 那个 detached goroutine 上，没有 recover。
+		return "❓ " + esc(fmt.Sprintf("歌词：未知状态 %d", l.State))
 	}
 }
 

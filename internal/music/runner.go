@@ -20,14 +20,17 @@ import (
 // "超时失败"，白烧前面几轮的 token。
 // ⚠️ 改 agent.go 的 defaultMaxSteps 时必须回头检查这个值是否还够用——
 // 两个常量是耦合的，只调一个就会重演上面这个问题。
-// 外层 command.Bot 的 musicTimeout 是 600s（bot.go），其中还包含 Uploader
-// 按目标各自计的上传超时（300s/目标），300s 在这个总预算里仍有余量。
+// 外层 command.Bot 的 musicTimeout 是 660s（bot.go）：agent 300s + 取词 30s
+// （lyricTimeout）+ 上传 300s（Uploader 按目标各自计的 targetUploadTimeout）
+// = 630s，660s 的总预算留了 30s 余量。
 const agentTimeout = 300 * time.Second
 
 // lyricTimeout 是取歌词那一步的超时。
 //
-// 它就是一次 JSON 请求（musicso 的 play.php），几百毫秒的事，不该有资格
-// 去啃外层 command.Bot 那 600s 预算里 agent 和上传要用的部分。
+// 它就是一次 JSON 请求（musicso 的 play.php），几百毫秒的事，正常情况下
+// 远远用不满 30s。这 30s 是**单独计入**外层 command.Bot 总预算的一份 ——
+// musicTimeout 已经把 agent 300s + 取词 30s + 上传 300s 三段都算了进去
+// （合计 630s，660s 留 30s 余量），不是白嫖别的步骤的余量。
 // 同 agentTimeout / targetUploadTimeout 的套路：每一步各管各的时限，
 // 一步卡住不拖垮后面的步骤。
 const lyricTimeout = 30 * time.Second

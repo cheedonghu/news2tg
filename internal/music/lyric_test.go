@@ -4,34 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-// lyricSource 是一个只关心 Lyric 的假音源。
-//
-// 它必须把 Source 的五个方法都实现掉（接口就是这么宽），
-// 但除 Lyric 之外的四个都不会被 Lyrics.Save 调到，给最省事的实现即可。
-type lyricSource struct {
-	lyric string
-	err   error
-}
-
-func (s *lyricSource) Name() string { return "fakelyric" }
-func (s *lyricSource) Hint() string { return "测试歌词源" }
-func (s *lyricSource) Search(context.Context, string) ([]Candidate, error) {
-	return nil, nil
-}
-func (s *lyricSource) Download(context.Context, Candidate, io.Writer) (int64, error) {
-	return 0, nil
-}
-func (s *lyricSource) Lyric(context.Context, Candidate) (string, error) {
-	return s.lyric, s.err
-}
-
 // newLyricTrack 造一个已下载好的 Track，src 指向给定的假音源。
+//
+// 假音源直接复用 agent_test.go 里的 fakeSource（它已经有 lyric/lyricErr
+// 两个字段，&fakeSource{lyric: ...} 就够表达本文件所有用例），不再另开
+// 一份 lyricSource —— 同一个 Source 接口在同一个包里重复实现两份纯属浪费，
+// 且改起来要同步改两处。
 func newLyricTrack(src Source) *Track {
 	return &Track{Artist: "周杰伦", Title: "晴天", Source: "fakelyric", src: src, cand: Candidate{ID: "1"}}
 }
@@ -42,7 +25,7 @@ func TestLyricsSaveOK(t *testing.T) {
 	dir := t.TempDir()
 
 	path, st := Lyrics{}.Save(context.Background(),
-		newLyricTrack(&lyricSource{lyric: lrc}), dir, "周杰伦 - 晴天.lrc")
+		newLyricTrack(&fakeSource{lyric: lrc}), dir, "周杰伦 - 晴天.lrc")
 
 	if st.State != LyricOK {
 		t.Fatalf("State = %v, want LyricOK", st.State)
@@ -65,7 +48,7 @@ func TestLyricsSaveUnsupported(t *testing.T) {
 	dir := t.TempDir()
 
 	path, st := Lyrics{}.Save(context.Background(),
-		newLyricTrack(&lyricSource{err: errLyricUnsupported}), dir, "a.lrc")
+		newLyricTrack(&fakeSource{lyricErr: errLyricUnsupported}), dir, "a.lrc")
 
 	if st.State != LyricUnsupported {
 		t.Fatalf("State = %v, want LyricUnsupported", st.State)
@@ -81,7 +64,7 @@ func TestLyricsSaveUnsupported(t *testing.T) {
 // 各音源在自己的错误里包一层说明是本仓库的常规做法（见 musicSoChallenge
 // 对 errSourceUnavailable 的用法），所以判别必须走 errors.Is 而不是 ==。
 func TestLyricsSaveUnsupportedWrapped(t *testing.T) {
-	src := &lyricSource{err: fmt.Errorf("mp3.pm 的页面里没有歌词: %w", errLyricUnsupported)}
+	src := &fakeSource{lyricErr: fmt.Errorf("mp3.pm 的页面里没有歌词: %w", errLyricUnsupported)}
 
 	_, st := Lyrics{}.Save(context.Background(), newLyricTrack(src), t.TempDir(), "a.lrc")
 	if st.State != LyricUnsupported {
@@ -97,7 +80,7 @@ func TestLyricsSaveMissing(t *testing.T) {
 	dir := t.TempDir()
 
 	path, st := Lyrics{}.Save(context.Background(),
-		newLyricTrack(&lyricSource{lyric: ""}), dir, "a.lrc")
+		newLyricTrack(&fakeSource{lyric: ""}), dir, "a.lrc")
 
 	if st.State != LyricMissing {
 		t.Fatalf("State = %v, want LyricMissing", st.State)
@@ -113,7 +96,7 @@ func TestLyricsSaveBlankIsMissing(t *testing.T) {
 	dir := t.TempDir()
 
 	_, st := Lyrics{}.Save(context.Background(),
-		newLyricTrack(&lyricSource{lyric: "   \n\t"}), dir, "a.lrc")
+		newLyricTrack(&fakeSource{lyric: "   \n\t"}), dir, "a.lrc")
 
 	if st.State != LyricMissing {
 		t.Fatalf("State = %v, want LyricMissing", st.State)
@@ -126,7 +109,7 @@ func TestLyricsSaveFailed(t *testing.T) {
 	dir := t.TempDir()
 
 	path, st := Lyrics{}.Save(context.Background(),
-		newLyricTrack(&lyricSource{err: errors.New("被 Cloudflare 拦截")}), dir, "a.lrc")
+		newLyricTrack(&fakeSource{lyricErr: errors.New("被 Cloudflare 拦截")}), dir, "a.lrc")
 
 	if st.State != LyricFailed {
 		t.Fatalf("State = %v, want LyricFailed", st.State)

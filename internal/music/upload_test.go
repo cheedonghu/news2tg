@@ -492,10 +492,17 @@ func TestUploadRequiredFailureSkipsRest(t *testing.T) {
 func TestUploadFileContentTypes(t *testing.T) {
 	var mu sync.Mutex
 	types := map[string]string{}
+	// lengths 顺带记下服务端实际收到的 Content-Length（r.ContentLength 由
+	// net/http 从请求头解析而来，不是我们自己回填的）：upload.go 里
+	// `req.ContentLength = fi.Size()` 是有实际后果的一行——不显式设置的话
+	// net/http 会走 chunked 传输，部分 alist 后端直接拒收整个请求。
+	// 只断言 Content-Type 测不出这一行被删掉，必须连长度一起验。
+	lengths := map[string]int64{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		mu.Lock()
 		types[filepath.Ext(r.URL.Path)] = r.Header.Get("Content-Type")
+		lengths[filepath.Ext(r.URL.Path)] = r.ContentLength
 		mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
 	}))
@@ -503,12 +510,23 @@ func TestUploadFileContentTypes(t *testing.T) {
 
 	u := NewUploader(srv.Client(), []Target{{Name: "A", URL: srv.URL + "/dav"}}, "alist", "pw")
 
+	mp3Path := writeTempMP3(t, "x")
+	lrcPath := writeTempMP3(t, "yy") // 内容长度与 mp3 不同，避免"凑巧相等"掩盖问题
 	files := []UploadFile{
-		{LocalPath: writeTempMP3(t, "x"), Filename: "a.mp3", ContentType: "audio/mpeg"},
-		{LocalPath: writeTempMP3(t, "y"), Filename: "a.lrc", ContentType: "text/plain; charset=utf-8", Optional: true},
+		{LocalPath: mp3Path, Filename: "a.mp3", ContentType: "audio/mpeg"},
+		{LocalPath: lrcPath, Filename: "a.lrc", ContentType: "text/plain; charset=utf-8", Optional: true},
 	}
 	if _, err := u.Upload(context.Background(), files, nil); err != nil {
 		t.Fatalf("Upload 意外报错: %v", err)
+	}
+
+	mp3Info, err := os.Stat(mp3Path)
+	if err != nil {
+		t.Fatalf("读取本地 mp3 信息失败: %v", err)
+	}
+	lrcInfo, err := os.Stat(lrcPath)
+	if err != nil {
+		t.Fatalf("读取本地 lrc 信息失败: %v", err)
 	}
 
 	mu.Lock()
@@ -518,5 +536,11 @@ func TestUploadFileContentTypes(t *testing.T) {
 	}
 	if types[".lrc"] != "text/plain; charset=utf-8" {
 		t.Errorf(".lrc 的 Content-Type = %q, want text/plain; charset=utf-8", types[".lrc"])
+	}
+	if lengths[".mp3"] != mp3Info.Size() {
+		t.Errorf(".mp3 的 Content-Length = %d, want %d（本地文件大小）", lengths[".mp3"], mp3Info.Size())
+	}
+	if lengths[".lrc"] != lrcInfo.Size() {
+		t.Errorf(".lrc 的 Content-Length = %d, want %d（本地文件大小）", lengths[".lrc"], lrcInfo.Size())
 	}
 }
