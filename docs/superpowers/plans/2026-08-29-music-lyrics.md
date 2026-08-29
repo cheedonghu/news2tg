@@ -60,17 +60,31 @@
 // TestMusicSoPlayRespTooLarge 验证：play.php 响应体超过上限时报错，
 // 而不是拿着被截断的半个 JSON 继续往下走。
 //
-// 判别力：去掉 io.LimitReader 之后，服务端吐的 2 MB 会被完整读进内存，
-// 那是个合法 JSON（url 字段就是超长而已），Download 会照常往下跑 ——
-// 也就是说这条用例挂不挂，正好对应"上限在不在"。
+// 判别力全在"直链指回本服务器"这一点上：
+//   - 有上限时，2 MB 的响应在 1 MB 处被截断 → JSON 不完整 → 解析失败 → Download 报错
+//   - 没有上限时，整个 JSON 被完整读入、解析成功，直链又是**能连上的**，
+//     Download 会一路成功返回 nil —— 用例于是失败
+//
+// 如果直链写成 http://x/... 这种连不上的地址，没有上限时 Download 也会因为
+// 拨号失败而返回 error，用例照样通过 —— 那就测不出上限在不在了。
 func TestMusicSoPlayRespTooLarge(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	mux := http.NewServeMux()
+	// base 在 httptest.NewServer 返回后才知道，而处理函数是在收到请求时
+	// 才读它的，所以这样赋值是安全的。newMusicSoServer 也是这个写法。
+	var base string
+	mux.HandleFunc("/api/play.php", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// 造一个语法完全合法、但体积远超上限的响应。
-		huge := strings.Repeat("A", 2<<20)
-		fmt.Fprintf(w, `{"code":1,"msg":"成功","url":"http://x/%s.mp3","lrc":"","pic":""}`, huge)
-	}))
+		// 语法完全合法、但体积远超上限：把 2 MB 填进 lrc 字段，
+		// 这也更贴近真实场景（歌词才是这个响应里可能变大的那部分）。
+		fmt.Fprintf(w, `{"code":1,"msg":"成功","url":%q,"lrc":%q,"pic":""}`,
+			base+"/cdn/song.mp3", strings.Repeat("A", 2<<20))
+	})
+	mux.HandleFunc("/cdn/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ID3fake-mp3-bytes")
+	})
+	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	base = srv.URL
 
 	m := NewMusicSo(srv.Client())
 	m.baseURL = srv.URL
@@ -78,7 +92,7 @@ func TestMusicSoPlayRespTooLarge(t *testing.T) {
 	var buf strings.Builder
 	_, err := m.Download(context.Background(), Candidate{ID: "q-x", dlCookie: "s"}, &buf)
 	if err == nil {
-		t.Fatal("响应体超过上限时应当报错")
+		t.Fatal("响应体超过上限时应当报错（当前实现把整个 2 MB 读进来并成功下载了，说明上限没生效）")
 	}
 	if buf.Len() != 0 {
 		t.Errorf("失败时不该往 writer 里写任何东西，实际写了 %d 字节", buf.Len())
@@ -89,7 +103,7 @@ func TestMusicSoPlayRespTooLarge(t *testing.T) {
 - [ ] **Step 2: 运行测试确认它失败**
 
 Run: `go test ./internal/music -run TestMusicSoPlayRespTooLarge -v`
-Expected: FAIL —— 当前无上限，2 MB 响应被完整读入并成功解析，`Download` 转而去 GET 那个不存在的 `http://x/AAA….mp3`，报的是连接错误而非上限错误；也可能因为环境不同而通过，所以**必须确认失败原因**：把 `t.Fatal` 那行改成 `t.Fatalf("err=%v", err)` 临时观察，看到的应是拨号失败一类的错误而不是"超过上限"。观察完改回去。
+Expected: FAIL，且失败信息必须是 `响应体超过上限时应当报错（当前实现把整个 2 MB 读进来并成功下载了，说明上限没生效）`。看到别的失败原因（比如拨号错误）说明用例写歪了，先修用例再往下走。
 
 - [ ] **Step 3: 加常量与 `play` 方法**
 
