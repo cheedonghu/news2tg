@@ -132,8 +132,10 @@ func (r *Runner) Run(ctx context.Context, chatID int64, query string) error {
 	st.Stage = StageUploading
 	rep.Update(ctx, *st)
 
+	// lyric 这一项显式 .String()：JSONHandler 不认 fmt.Stringer，
+	// 直接传枚举值会打成裸整数（详见 report.go 里 LyricState.String 的注释）。
 	slog.InfoContext(ctx, "开始上传音乐到 WebDAV",
-		"file", filename, "bytes", track.Bytes, "lyric", lyricSt.State)
+		"file", filename, "bytes", track.Bytes, "lyric", lyricSt.State.String())
 
 	// stMu 只保护上传阶段：Uploader 内部给每个目标起一个 goroutine，
 	// onProgress（也就是这里的回调）在 wg.Wait() 返回之前会被这些 goroutine

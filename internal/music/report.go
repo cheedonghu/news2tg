@@ -69,11 +69,18 @@ const (
 	LyricFailed                        // 请求/解析/落盘出错
 )
 
-// String 让 LyricState 在日志里打出人话，而不是裸整数。
+// String 让 LyricState 能打出人话，而不是裸整数（"lyric":0 排障时认不出是哪个状态）。
 //
-// 起因：runner.go 的 slog.InfoContext(..., "lyric", lyricSt.State) 若没有
-// 这个方法，JSON 日志里就是 "lyric":0，排障时完全认不出对应哪个状态。
-// slog 遇到实现了 fmt.Stringer 的值会自动调用它，不需要在调用点做任何改动。
+// ⚠️ 调用点必须**显式**调它，见 runner.go 的 slog.String("lyric", lyricSt.State.String())。
+// 光实现 fmt.Stringer 是不够的：本进程装的是 slog.NewJSONHandler（main.init），
+// 而 JSONHandler 对 KindAny 的值走的是 json.Marshal，**不认** fmt.Stringer ——
+// LyricState 底层是 int，于是照样被编成数字。只有 TextHandler 才会通过它的
+// %+v 兜底路径调到 String()。实测：
+//
+//	JSONHandler → {"lyric":2}      TextHandler → lyric=已获取
+//
+// 想让它对 JSON 也自动生效的话得实现 slog.LogValuer 而不是 fmt.Stringer；
+// 眼下只有一个调用点，显式转更直白，不值得为此多引一个接口。
 func (s LyricState) String() string {
 	switch s {
 	case LyricUnsupported:
