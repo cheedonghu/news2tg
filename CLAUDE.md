@@ -60,7 +60,20 @@ The design is interface-based dependency injection — business code (`monitor`)
   **function calling** 为每个注册的 `Source` **自动生成** `search_<名>`/`download_<名>`
   两个工具，模型负责理解自由格式歌名、换关键词重搜（mp3.pm 的中文歌按拼音收录，
   搜中文常零结果）、避开 live/伴奏/翻唱，并在最后输出规范化的
-  `{"artist","title","id"}` JSON 用于拼文件名。**上传不是工具**——目标固定、无需模型判断，
+  `{"artist","title","id"}` JSON 用于拼文件名。
+  歌词是 `Source` 接口的**一项能力**（`Lyric`）而不是独立的可选接口：
+  可选断言那种「实现了就自动生效、没实现就静默没有」很容易在加音源时漏掉，
+  表现为"这个源的歌永远没词"这种没人会去查的静默缺失，写进接口以后编译器
+  会替我们向每个新音源作者要这个答案。`MusicSo` 复用 `play.php` 那一跳里
+  的 `lrc` 字段（实测是内联的标准 LRC 正文）供词；`Mp3PM` 返回
+  `errLyricUnsupported` 哨兵明确表态不供，好让进度消息说得出「mp3pm 不提供」
+  而不是跟「站点未收录」混为一谈。取词由 `music.Lyrics`（`lyric.go`）在
+  agent 返回后、上传前执行，`.lrc` 与 mp3 **同名同目录**（两个名字都出自
+  `buildBase`，差一个字播放器就配不上对）一起传上 WebDAV，并且标成
+  `UploadFile.Optional` —— 歌词传失败不把目标判成失败。
+  **歌词的任何问题都不阻断已下好的歌上传**，沿用「AI/digest 失败不阻断推送」
+  那条约定。因此从 mp3.pm 下的歌没有歌词，这是设计如此，不是缺陷。
+  **上传不是工具**——目标固定、无需模型判断，
   由 `music.Uploader`（`upload.go`）在 agent 返回后并发 PUT 到配置好的 WebDAV 目标，
   至少一个成功即算成功。上传目标**至少一个、至多两个**；`Uploader` 内部按 `[]Target`
   循环，只配一个和配两个走同一条代码路径。`musicso` 的下载需要搜索那一跳下发的
