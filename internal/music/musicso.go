@@ -226,11 +226,13 @@ func parseMusicSoResults(ctx context.Context, htmlBody, cookie string) []Candida
 const maxPlayRespBytes = 1 << 20
 
 // musicSoPlayResp 是 /api/play.php 的响应形状。
-// 只声明用得上的字段，其余（lrc / pic）让 encoding/json 自动丢弃。
+// 实测响应键固定为 code / msg / url / lrc / pic 五个；pic 用不上，
+// 让 encoding/json 自动丢弃。
 type musicSoPlayResp struct {
 	Code int    `json:"code"` // 1 = 成功
 	Msg  string `json:"msg"`
 	URL  string `json:"url"` // CDN 直链
+	LRC  string `json:"lrc"` // 内联的 LRC 歌词正文，可能为空
 }
 
 // play 走 /api/play.php 这一跳：用会话换回该候选的播放信息。
@@ -343,4 +345,36 @@ func (m *MusicSo) Download(ctx context.Context, c Candidate, w io.Writer) (int64
 		return n, fmt.Errorf("写入 mp3 数据失败: %w", err)
 	}
 	return n, nil
+}
+
+// Lyric 取回该候选的歌词。
+//
+// 复用 Download 的第一跳：/api/play.php 的响应里本来就带着 lrc 字段，
+// 一次请求同时给出直链和歌词。所以"从 musicso 下的歌自带歌词"这条快路径
+// 不需要任何额外的搜索或匹配 —— 手上就有 id 和会话。
+//
+// lrc 的形状已于 2026-08-29 实测确认：**内联的标准 LRC 正文**，含
+// [ti:]/[ar:]/[al:]/[offset:] 元信息行与 [mm:ss.xx] 时间戳，JSON 里
+// 换行是 \n（encoding/json 解码后即真实换行），UTF-8。不是 URL、
+// 不是 base64，拿到就能直接写进 .lrc，不需要二次请求或解码。
+// QQ（type=q）与网易云（type=n）两个后端形状一致。
+func (m *MusicSo) Lyric(ctx context.Context, c Candidate) (string, error) {
+	pr, err := m.play(ctx, c)
+	if err != nil {
+		return "", err
+	}
+
+	// TrimSpace 后为空 = 站点没收录这首的词。这是**正常路径**，返回 nil error，
+	// 由 Lyrics.Save 翻成 LyricMissing。
+	// 用 TrimSpace 判断而不是 == ""，是为了顺带挡住"只有空白字符"那种情况：
+	// 那会写出一个内容全是空白的 .lrc，传上网盘只会让播放器显示一片空白，
+	// 比没有歌词更糟。
+	if strings.TrimSpace(pr.LRC) == "" {
+		slog.InfoContext(ctx, "musicso 未收录该曲歌词", "id", c.ID, "title", c.Title)
+		return "", nil
+	}
+
+	// 返回未经 TrimSpace 的原文：歌词正文的首尾空白也是内容的一部分，
+	// 上面那次 TrimSpace 只用来判空，不改动要落盘的东西。
+	return pr.LRC, nil
 }

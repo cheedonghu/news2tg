@@ -67,6 +67,8 @@ type fakeSource struct {
 	payload   string // Download 写出的内容
 	dlErr     error
 	dlCalls   []string // 记录被下载的 id
+	lyric     string   // Lyric 返回的歌词；空串表示"站点未收录"
+	lyricErr  error    // 非 nil 时 Lyric 返回它
 }
 
 func (s *fakeSource) Name() string { return s.name }
@@ -94,6 +96,12 @@ func (s *fakeSource) Download(_ context.Context, c Candidate, w io.Writer) (int6
 	}
 	n, err := io.WriteString(w, s.payload)
 	return int64(n), err
+}
+
+// Lyric 默认返回 ("", nil)，即"该源供词但这首没收录" —— 现有那十几个
+// 用例都不关心歌词，这个默认值让它们一个字都不用改。
+func (s *fakeSource) Lyric(_ context.Context, _ Candidate) (string, error) {
+	return s.lyric, s.lyricErr
 }
 
 // nopReporter 是不做任何事的 Reporter，用于不关心进度的用例。

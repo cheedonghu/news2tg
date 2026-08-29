@@ -2,6 +2,7 @@ package music
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -168,5 +169,22 @@ func TestMp3PMDownloadNon2xx(t *testing.T) {
 	var buf strings.Builder
 	if _, err := m.Download(context.Background(), Candidate{ID: "1", dlURL: srv.URL}, &buf); err == nil {
 		t.Fatal("403 时应报错")
+	}
+}
+
+// TestMp3PMLyricUnsupported 验证：mp3.pm 明确表态不供词。
+//
+// 为什么要返回哨兵而不是 ("", nil)：这两件事在界面上是不同的两句话
+// （"mp3pm 不提供" vs "站点未收录"）。合并的代价是日后某个源的歌词
+// 悄悄坏掉时，界面上跟"这首歌真的没词"长得一模一样，没人会发现。
+func TestMp3PMLyricUnsupported(t *testing.T) {
+	m := NewMp3PM(http.DefaultClient)
+
+	got, err := m.Lyric(context.Background(), Candidate{ID: "1"})
+	if !errors.Is(err, errLyricUnsupported) {
+		t.Fatalf("err = %v, want errLyricUnsupported", err)
+	}
+	if got != "" {
+		t.Errorf("歌词 = %q, want 空串", got)
 	}
 }

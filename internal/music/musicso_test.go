@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/cheedonghu/news2tg/internal/tools"
 )
 
 // TestParseMusicSoResults 锁死 HTML 解析行为，尤其是两条畸形条目必须被跳过。
@@ -304,5 +306,108 @@ func TestMusicSoPlayRespTooLarge(t *testing.T) {
 	}
 	if buf.Len() != 0 {
 		t.Errorf("失败时不该往 writer 里写任何东西，实际写了 %d 字节", buf.Len())
+	}
+}
+
+// newMusicSoLyricServer 起一个只回 play.php 的假站点，响应体由调用方给定。
+// 与 newMusicSoServer 分开是因为那个的 play.php 响应写死了空 lrc，
+// 而这里每个用例要的 lrc 都不一样。
+func newMusicSoLyricServer(t *testing.T, playBody string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, playBody)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestMusicSoLyric 验证：lrc 是内联 LRC 正文时原样返回。
+// fixture 取自 2026-08-29 对线上 play.php 的实测响应（截短）。
+func TestMusicSoLyric(t *testing.T) {
+	srv := newMusicSoLyricServer(t, loadFixture(t, "musicso_play.json"))
+
+	m := NewMusicSo(srv.Client())
+	m.baseURL = srv.URL
+
+	got, err := m.Lyric(context.Background(), Candidate{ID: "q-0039MnYb0qxYhV", dlCookie: "s"})
+	if err != nil {
+		t.Fatalf("Lyric 意外报错: %v", err)
+	}
+	// 元信息行必须原样保留：播放器靠 [ti:]/[ar:] 显示曲目信息。
+	if !strings.HasPrefix(got, "[ti:晴天]") {
+		t.Errorf("歌词开头 = %q, want 以 [ti:晴天] 开头", tools.TruncateUTF8(got, 30))
+	}
+	// JSON 里的 \n 必须已经被 encoding/json 解码成真正的换行 ——
+	// 否则写出去的 .lrc 会是一整行，播放器完全认不出来。
+	if !strings.Contains(got, "\n[00:00.00]晴天 - 周杰伦 (Jay Chou)") {
+		t.Errorf("歌词里没有解码后的换行 + 时间戳行，实际:\n%q", got)
+	}
+	if strings.Contains(got, `\n`) {
+		t.Error("歌词里出现了未解码的字面 \\n，说明当成了转义文本处理")
+	}
+}
+
+// TestMusicSoLyricEmpty 验证：lrc 为空串 = 站点没收录这首的词，
+// 这是**正常路径**，必须返回 ("", nil) 而不是错误。
+//
+// 判别力：如果实现把空 lrc 当错误，Lyrics.Save 会把它翻成 LyricFailed，
+// 用户看到的是"歌词获取失败"——一条把人往"是不是坏了"上带的假线索。
+func TestMusicSoLyricEmpty(t *testing.T) {
+	srv := newMusicSoLyricServer(t, `{"code":1,"msg":"成功","url":"http://x/a.mp3","lrc":"","pic":""}`)
+
+	m := NewMusicSo(srv.Client())
+	m.baseURL = srv.URL
+
+	got, err := m.Lyric(context.Background(), Candidate{ID: "q-x", dlCookie: "s"})
+	if err != nil {
+		t.Fatalf("空歌词不该报错: %v", err)
+	}
+	if got != "" {
+		t.Errorf("歌词 = %q, want 空串", got)
+	}
+}
+
+// TestMusicSoLyricBlank 验证：lrc 只有空白字符时同样按"未收录"处理。
+// 否则会写出一个内容全是空白的 .lrc 传上网盘，播放器显示一片空白，
+// 比没有歌词更糟。
+func TestMusicSoLyricBlank(t *testing.T) {
+	srv := newMusicSoLyricServer(t, `{"code":1,"msg":"成功","url":"http://x/a.mp3","lrc":"  \n\t ","pic":""}`)
+
+	m := NewMusicSo(srv.Client())
+	m.baseURL = srv.URL
+
+	got, err := m.Lyric(context.Background(), Candidate{ID: "q-x", dlCookie: "s"})
+	if err != nil {
+		t.Fatalf("空白歌词不该报错: %v", err)
+	}
+	if got != "" {
+		t.Errorf("歌词 = %q, want 空串（只有空白等同于未收录）", got)
+	}
+}
+
+// TestMusicSoLyricCloudflare 验证：撞上 Cloudflare 质询时返回**明确错误**，
+// 不能伪装成"这首没有歌词"。理由同 TestMusicSoCloudflareChallenge。
+func TestMusicSoLyricCloudflare(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("cf-mitigated", "challenge")
+		w.Header().Set("cf-ray", "a2f236c9695cae43-LAX")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `<html><head><title>Just a moment...</title></head></html>`)
+	}))
+	t.Cleanup(srv.Close)
+
+	m := NewMusicSo(srv.Client())
+	m.baseURL = srv.URL
+
+	got, err := m.Lyric(context.Background(), Candidate{ID: "q-x", dlCookie: "s"})
+	if err == nil {
+		t.Fatal("撞上 Cloudflare 质询时必须报错，不能静默当成没有歌词")
+	}
+	if got != "" {
+		t.Errorf("出错时歌词应为空，实际 %q", got)
+	}
+	if !strings.Contains(err.Error(), "Cloudflare") {
+		t.Errorf("错误信息应当点名 Cloudflare，实际: %v", err)
 	}
 }
