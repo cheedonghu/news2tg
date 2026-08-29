@@ -719,3 +719,40 @@ func TestDefaultMaxStepsFitsMultipleSources(t *testing.T) {
 		t.Fatalf("defaultMaxSteps = %d，装不下双音源最坏路径的 %d 轮", defaultMaxSteps, worstCasePath)
 	}
 }
+
+// TestAgentTrackCarriesSourceAndCandidate 验证：下载成功后产出的 Track
+// 带着"下这首歌的那个音源"和"那条候选"，且经 finalize 的值拷贝后仍在。
+//
+// 这两个字段是 Runner 取歌词的唯一凭据。finalize 里造的是**新 Track**
+// （nt := *r.track），所以必须确认值拷贝把它们带过去了 —— 漏了的话
+// 表现是"所有歌都没有歌词"，而且不会有任何错误信息。
+func TestAgentTrackCarriesSourceAndCandidate(t *testing.T) {
+	src := &fakeSource{
+		name:    "fake",
+		payload: "ID3fake-bytes",
+		results: map[string][]Candidate{
+			"晴天": {{ID: "42", Artist: "周杰伦", Title: "晴天", dlURL: "u", dlCookie: "sess"}},
+		},
+	}
+	llm := &fakeLLM{scripts: []openai.ChatCompletionResponse{
+		toolCallResp("c1", "search_fake", `{"query":"晴天"}`),
+		toolCallResp("c2", "download_fake", `{"id":"42"}`),
+		finalResp(`{"artist":"周杰伦","title":"晴天","id":"42"}`),
+	}}
+
+	a := newTestAgent(t, llm, src)
+	track, err := a.Fetch(context.Background(), &Status{Query: "晴天"}, t.TempDir(), &nopReporter{})
+	if err != nil {
+		t.Fatalf("Fetch 意外报错: %v", err)
+	}
+	if track.src != Source(src) {
+		t.Errorf("track.src = %v, want 下载它的那个音源", track.src)
+	}
+	if track.cand.ID != "42" {
+		t.Errorf("track.cand.ID = %q, want 42", track.cand.ID)
+	}
+	// 会话必须跟着候选一起过来：musicso 的取词那一跳要用它。
+	if track.cand.dlCookie != "sess" {
+		t.Errorf("track.cand.dlCookie = %q, want sess", track.cand.dlCookie)
+	}
+}
