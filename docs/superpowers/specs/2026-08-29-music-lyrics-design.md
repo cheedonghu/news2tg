@@ -163,13 +163,15 @@ func (Lyrics) Save(ctx context.Context, t *Track, dir, filename string) (string,
   `Download` 取其中的 `url`，`Lyric` 取其中的 `lrc`。候选 id 拆
   `<backend>-<id>`、`PHPSESSID`、`musicSoChallenge` 这些站点知识都留在这个方法里，
   两个调用方都不重复。
-- 新增 `Lyric` 方法。`lrc` 字段的内容形状**两种都吃**：以 `http://` / `https://`
-  开头就再 GET 一次拿正文（**不带 cookie**，同 CDN 直链那条理由：不把会话
-  泄漏给第三方），否则当作正文本身。两者都取不到有效内容时记一条 WARN 并按
-  「未收录」（`("", nil)`）处理。
-- 取词加 `maxLyricBytes = 1 << 20` 上限，防站点返回巨大响应撑爆内存。
-  同 `defaultMaxBytes` 的思路。超限时**返回错误**，不返回截断后的半截歌词——
-  半截 LRC 传上网盘比没有更糟（同 `doDownload` 删下载半成品的理由）。
+- 新增 `Lyric` 方法：取 `pr.LRC`，`TrimSpace` 后为空即 `("", nil)`（未收录），
+  否则**原样返回**。已实测确认它是内联的标准 LRC 正文（见下文「实测结论」），
+  不需要二次请求、不需要解码。
+- `play` 方法把响应体的读取改成带上限的
+  `io.ReadAll(io.LimitReader(resp.Body, maxPlayRespBytes))`，
+  `maxPlayRespBytes = 1 << 20`。现有代码这里是**无上限**的 `io.ReadAll`，
+  歌词进来之后响应体从几百字节涨到几 KB，顺手把这个既有的无界读一起收掉。
+  上限盖住整个 JSON 响应，`Download` 与 `Lyric` 同时受益。
+  实测真实响应约 3 KB，1 MB 有 300 倍余量。
 - Cloudflare 质询沿用 `musicSoChallenge`：返回**明确错误**，不伪装成「没有歌词」。
 
 ### `internal/music/mp3pm.go`
@@ -279,7 +281,7 @@ func BuildLyricFilename(artist, title string) string  // buildBase + ".lrc"
 |---|---|
 | 音源不供词（mp3pm 下的歌） | `LyricUnsupported`，只传 mp3，任务正常 |
 | 站点没收录这首的词（`lrc` 空） | `LyricMissing`，只传 mp3，任务正常 |
-| 取词请求失败 / Cloudflare 质询 / 超 1 MB | `LyricFailed` + 原因，只传 mp3，任务正常 |
+| 取词请求失败 / Cloudflare 质询 / 响应超 `maxPlayRespBytes` | `LyricFailed` + 原因，只传 mp3，任务正常 |
 | `.lrc` 落盘失败 | `LyricFailed`，删半成品，只传 mp3，任务正常 |
 | `.lrc` 上传到某目标失败 | 该目标仍 `TargetOK`，记 `Warn` |
 | mp3 上传到某目标失败 | 该目标 `TargetFailed`（不变） |
@@ -294,11 +296,13 @@ func BuildLyricFilename(artist, title string) string  // buildBase + ".lrc"
 
 **`musicso_test.go`（扩充）** —— `play.php` 假服务端加歌词分支：
 
-1. `lrc` 是内联正文 → `Lyric` 原样返回
-2. `lrc` 是 URL → 再 GET 一次拿正文，且**那一跳不带 Cookie 头**
-3. `lrc` 为空串 → `("", nil)`
+1. `lrc` 是内联 LRC 正文 → `Lyric` 原样返回，含 `[ti:]` 元信息行与多行 `\n`
+   （fixture 取自下文实测那份真实响应，截短保留头尾）
+2. `lrc` 为空串 → `("", nil)`，走「未收录」
+3. `lrc` 只有空白字符 → 同样按「未收录」处理，不写出一个空 `.lrc`
 4. Cloudflare 质询 → 返回错误而非空歌词
-5. 超过 `maxLyricBytes` → 报错，不返回半截歌词
+5. 响应体超过 `maxPlayRespBytes` → 报错（JSON 被截断，必然解析失败），
+   且 `Download` 走同一条保护
 
 抽出 `play` 之后 `Download` 行为一字不变——现有下载用例即回归门，不放宽。
 
@@ -331,19 +335,45 @@ path 为空时状态都不是 `LyricOK`。
 **`agent_test.go`（扩充）** —— 下载成功后产出的 `Track` 带上了 `src` 与 `cand`，
 且经 `finalize` 的值拷贝后仍然带着。
 
-## 实施前必须先确认的一件事
+## 实测结论（2026-08-29）
 
-`play.php` 的 `lrc` 字段**真实形状未经实测**（现有 fixture 里是空串）：可能是
-LRC 正文、可能是一个 URL、也可能是转义/编码过的文本。设计上已经对「正文」和
-「URL」两种都做了处理，但实施的**第一步**应当是对线上接口发一次真实请求，
-把实际形状确认下来并据此固化 fixture。若结果是第三种形状（如 base64），
-只需调整 `MusicSo.Lyric` 内部的解码分支，本设计的其余部分不受影响。
+对线上 `play.php` 发过真实请求，`lrc` 的形状已确认。
+
+搜索 `/s/晴天` → HTTP 200，正常下发 `Set-Cookie: PHPSESSID=…`，未撞 Cloudflare 质询。
+取其中一条候选调 `play.php`：
+
+```
+GET /api/play.php?id=0039MnYb0qxYhV&type=q   (Cookie: PHPSESSID=…)
+HTTP 200，3008 字节
+
+{"code":1,"msg":"成功",
+ "url":"https://isure6.stream.qqmusic.qq.com/M800003Qui1q2u1Zho.mp3?guid=…",
+ "lrc":"[ti:晴天]\n[ar:周杰伦]\n[al:叶惠美]\n[by:]\n[offset:0]\n[00:00.00]晴天 - 周杰伦 (Jay Chou)\n[00:02.25]词：周杰伦\n…",
+ "pic":"https://y.gtimg.cn/music/photo_new/…"}
+```
+
+**结论：`lrc` 是内联的标准 LRC 正文。** 带 `[ti:]/[ar:]/[al:]/[offset:]` 元信息行、
+`[mm:ss.xx]` 时间戳，换行在 JSON 里是 `\n`（`encoding/json` 解码后即真实换行），
+UTF-8。**不是 URL，不是 base64，不需要二次请求或解码**，`json.Unmarshal` 出来
+直接写进 `.lrc` 即可。
+
+QQ（`type=q`）与网易云（`type=n`）两个后端各验一次，形状一致；网易云的时间戳
+是三位小数（`[00:00.000]`），无关紧要，原样落盘。
+
+响应键固定为 `code` / `msg` / `url` / `lrc` / `pic` 五个，与现有
+`musicSoPlayResp` 的注释相符。
+
+**因此本设计相对初稿删掉了「lrc 可能是 URL」那条分支**：两个后端的真实响应都是
+内联正文，那条分支永远不会触发，却要一直背着「不能给它带 cookie」的注意事项。
+万一站点日后真改成 URL 形态，它会落进「解析不出有效内容」的 WARN，日志能指到病根。
+
+实施时把上面这份真实响应截短后固化成 `testdata/musicso_play.json`。
 
 ## 风险
 
 | 风险 | 缓解 |
 |---|---|
-| `lrc` 实际形状与预期不符 | 实施第一步实测；解析只影响 `Lyric` 内部一个分支 |
+| `lrc` 形状日后改变（如换成 URL） | 已实测当前是内联正文并固化 fixture；真改了会落进 `LyricMissing` 并记 WARN，只影响 `Lyric` 内部一个分支 |
 | 改 `Upload` 签名波及既有上传语义 | 「至少一个目标成功」只看必传文件；用例把既有语义逐条锁死 |
 | 抽 `play` 时改坏 `Download` | 现有 `musicso_test.go` 的下载用例即回归门 |
 | `Source` 接口变宽，只供词的站接不进来 | 已知取舍（见决策 1）；真需要时再引入独立歌词接口 |
