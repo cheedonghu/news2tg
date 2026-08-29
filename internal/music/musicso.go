@@ -216,6 +216,15 @@ func parseMusicSoResults(ctx context.Context, htmlBody, cookie string) []Candida
 	return out
 }
 
+// maxPlayRespBytes 是 /api/play.php 响应体的读取上限。
+//
+// 这里原先是无上限的 io.ReadAll —— 整个响应被读进内存再 json.Unmarshal。
+// 一个坏掉或恶意的站点可以让它变得任意大，而我们没有任何防线。
+// 上限放在 play 这一个读取点上、不下放给调用方，理由同 agent.go 的
+// defaultMaxBytes：否则每多一个调用方就要重复实现一遍同样的防御。
+// 实测真实响应约 3 KB，1 MB 有 300 倍余量。
+const maxPlayRespBytes = 1 << 20
+
 // musicSoPlayResp 是 /api/play.php 的响应形状。
 // 只声明用得上的字段，其余（lrc / pic）让 encoding/json 自动丢弃。
 type musicSoPlayResp struct {
@@ -224,29 +233,33 @@ type musicSoPlayResp struct {
 	URL  string `json:"url"` // CDN 直链
 }
 
-// Download 走两跳：先用会话换到 CDN 直链，再裸 GET 那个直链。
+// play 走 /api/play.php 这一跳：用会话换回该候选的播放信息。
 //
-// 为什么不能一跳：搜索结果里给的是站点自己的详情页地址，真正的音频直链
-// 要现问 /api/play.php 要，而且它认搜索那一跳下发的 PHPSESSID。
-// 好在换来的 CDN 直链本身**不需要任何 cookie**（实测），所以第二跳是裸 GET ——
-// 也别给它带上 cookie，那等于把会话泄漏给第三方 CDN。
-func (m *MusicSo) Download(ctx context.Context, c Candidate, w io.Writer) (int64, error) {
+// 抽成独立方法是因为它有两个调用方（Download 取其中的 url，Lyric 取其中的
+// lrc），而候选 id 拆 <backend>-<id>、PHPSESSID、Cloudflare 质询识别
+// 这些站点知识只该存在一份。
+//
+// 成功返回时保证 pr.Code == 1；至于 url / lrc 具体有没有内容，
+// 由各调用方按自己的需要判断 —— 对 Download 来说空 url 是失败，
+// 对 Lyric 来说空 lrc 只是"站点没收录这首"。
+func (m *MusicSo) play(ctx context.Context, c Candidate) (musicSoPlayResp, error) {
+	// zero 是出错时返回的零值。Go 没有"返回 null"，用一个具名零值比
+	// 每处都写 musicSoPlayResp{} 更清楚。
+	var zero musicSoPlayResp
+
 	// 候选 id 的形状是 <后端标识>-<站内 id>，按第一个 '-' 切一刀。
 	// SplitN(s, sep, 2) 最多切成 2 段，所以站内 id 里万一有 '-' 也不会被切碎。
 	parts := strings.SplitN(c.ID, "-", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return 0, fmt.Errorf("musicso 候选 id %q 形状不对（应为 <q|n>-<id>）", c.ID)
+		return zero, fmt.Errorf("musicso 候选 id %q 形状不对（应为 <q|n>-<id>）", c.ID)
 	}
 	backend, id := parts[0], parts[1]
 
-	slog.InfoContext(ctx, "开始从 musicso 下载", "id", id, "backend", backend, "title", c.Title)
-
-	// ① 用会话换直链。
 	playURL := fmt.Sprintf("%s/api/play.php?id=%s&type=%s",
 		strings.TrimRight(m.baseURL, "/"), url.QueryEscape(id), url.QueryEscape(backend))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, playURL, nil)
 	if err != nil {
-		return 0, err
+		return zero, err
 	}
 	req.Header.Set("User-Agent", browserUA)
 	if c.dlCookie != "" {
@@ -257,26 +270,51 @@ func (m *MusicSo) Download(ctx context.Context, c Candidate, w io.Writer) (int64
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("musicso 直链解析请求失败: %w", err)
+		return zero, fmt.Errorf("musicso 直链解析请求失败: %w", err)
 	}
-	body, readErr := io.ReadAll(resp.Body)
-	// 读完就关：下面还要发第二个请求，早点把连接还回池子。
+	// io.LimitReader 包一层，最多只放出 maxPlayRespBytes 个字节。
+	// 超限时 JSON 必然被截断、下面的 Unmarshal 必然失败 —— 这正是我们要的：
+	// 宁可报一个明确的解析错误，也不要拿着半个响应继续往下走。
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxPlayRespBytes))
+	// 读完就关：调用方后面可能还要发别的请求，早点把连接还回池子。
 	resp.Body.Close()
 	if readErr != nil {
-		return 0, fmt.Errorf("读取 musicso 直链解析响应失败: %w", readErr)
+		return zero, fmt.Errorf("读取 musicso 直链解析响应失败: %w", readErr)
 	}
-	if err := musicSoChallenge(ctx, resp, string(body)); err != nil {
-		return 0, err
+	if cErr := musicSoChallenge(ctx, resp, string(body)); cErr != nil {
+		return zero, cErr
 	}
 
 	var pr musicSoPlayResp
 	if jErr := json.Unmarshal(body, &pr); jErr != nil {
-		// 会话缺失时站点回的是纯文本 "forbidden"，正好落在这里。
-		// 把原文截断带进错误信息，比一句"JSON 解析失败"有用得多。
-		return 0, fmt.Errorf("musicso 直链解析返回的不是 JSON（%v）：%s",
+		// 会话缺失时站点回的是纯文本 "forbidden"，正好落在这里；
+		// 响应超限被截断也落在这里。把原文截断带进错误信息，
+		// 比一句"JSON 解析失败"有用得多。
+		return zero, fmt.Errorf("musicso 直链解析返回的不是 JSON（%v）：%s",
 			jErr, tools.TruncateUTF8(strings.TrimSpace(string(body)), 100))
 	}
-	if pr.Code != 1 || strings.TrimSpace(pr.URL) == "" {
+	if pr.Code != 1 {
+		return zero, fmt.Errorf("musicso 直链解析失败（code=%d msg=%q）", pr.Code, pr.Msg)
+	}
+	return pr, nil
+}
+
+// Download 走两跳：先用会话换到 CDN 直链，再裸 GET 那个直链。
+//
+// 为什么不能一跳：搜索结果里给的是站点自己的详情页地址，真正的音频直链
+// 要现问 /api/play.php 要，而且它认搜索那一跳下发的 PHPSESSID（第一跳的
+// 细节都在 play 里）。好在换来的 CDN 直链本身**不需要任何 cookie**（实测），
+// 所以第二跳是裸 GET —— 也别给它带上 cookie，那等于把会话泄漏给第三方 CDN。
+func (m *MusicSo) Download(ctx context.Context, c Candidate, w io.Writer) (int64, error) {
+	slog.InfoContext(ctx, "开始从 musicso 下载", "id", c.ID, "title", c.Title)
+
+	// ① 用会话换直链。
+	pr, err := m.play(ctx, c)
+	if err != nil {
+		return 0, err
+	}
+	if strings.TrimSpace(pr.URL) == "" {
+		// code 已经在 play 里校验过是 1 了，走到这里说明站点说成功却没给地址。
 		return 0, fmt.Errorf("musicso 未能给出直链（code=%d msg=%q）", pr.Code, pr.Msg)
 	}
 

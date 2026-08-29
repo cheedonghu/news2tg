@@ -264,3 +264,45 @@ func TestMusicSoChallengeWithout403(t *testing.T) {
 		t.Fatal("cf-mitigated 存在时即便状态码是 200 也应报错")
 	}
 }
+
+// TestMusicSoPlayRespTooLarge 验证：play.php 响应体超过上限时报错，
+// 而不是拿着被截断的半个 JSON 继续往下走。
+//
+// 判别力全在"直链指回本服务器"这一点上：
+//   - 有上限时，2 MB 的响应在 1 MB 处被截断 → JSON 不完整 → 解析失败 → Download 报错
+//   - 没有上限时，整个 JSON 被完整读入、解析成功，直链又是**能连上的**，
+//     Download 会一路成功返回 nil —— 用例于是失败
+//
+// 如果直链写成 http://x/... 这种连不上的地址，没有上限时 Download 也会因为
+// 拨号失败而返回 error，用例照样通过 —— 那就测不出上限在不在了。
+func TestMusicSoPlayRespTooLarge(t *testing.T) {
+	mux := http.NewServeMux()
+	// base 在 httptest.NewServer 返回后才知道，而处理函数是在收到请求时
+	// 才读它的，所以这样赋值是安全的。newMusicSoServer 也是这个写法。
+	var base string
+	mux.HandleFunc("/api/play.php", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// 语法完全合法、但体积远超上限：把 2 MB 填进 lrc 字段，
+		// 这也更贴近真实场景（歌词才是这个响应里可能变大的那部分）。
+		fmt.Fprintf(w, `{"code":1,"msg":"成功","url":%q,"lrc":%q,"pic":""}`,
+			base+"/cdn/song.mp3", strings.Repeat("A", 2<<20))
+	})
+	mux.HandleFunc("/cdn/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ID3fake-mp3-bytes")
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	base = srv.URL
+
+	m := NewMusicSo(srv.Client())
+	m.baseURL = srv.URL
+
+	var buf strings.Builder
+	_, err := m.Download(context.Background(), Candidate{ID: "q-x", dlCookie: "s"}, &buf)
+	if err == nil {
+		t.Fatal("响应体超过上限时应当报错（当前实现把整个 2 MB 读进来并成功下载了，说明上限没生效）")
+	}
+	if buf.Len() != 0 {
+		t.Errorf("失败时不该往 writer 里写任何东西，实际写了 %d 字节", buf.Len())
+	}
+}
