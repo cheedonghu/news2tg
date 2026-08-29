@@ -373,3 +373,35 @@ func TestUploadSingleTargetFails(t *testing.T) {
 		t.Fatalf("got = %+v, want 单个 TargetFailed", got)
 	}
 }
+
+// TestBuildLyricFilenameMatchesMP3 是这次改动里最要紧的一条断言：
+// .lrc 与 .mp3 去掉扩展名之后必须**逐字相等**，包括触发截断的超长输入。
+//
+// 为什么单独锁死：播放器是靠"同目录同名"把歌词配给音频的。一旦两个名字
+// 的截断结果差一个字，歌词就永远配不上 —— 而且不会有任何报错，
+// 用户只会觉得"下了歌词但没用"。
+func TestBuildLyricFilenameMatchesMP3(t *testing.T) {
+	cases := []struct{ artist, title string }{
+		{"周杰伦", "晴天"},
+		{"", ""},                          // 两个都空 → unknown 兜底
+		{"A/B", "C:D"},                    // 危险字符要被同样清洗
+		{strings.Repeat("周", 200), "晴天"},  // 超长，必然触发 120 rune 截断
+		{"周杰伦", strings.Repeat("晴", 200)}, // 截断落在歌名一侧
+	}
+	for _, c := range cases {
+		mp3 := BuildFilename(c.artist, c.title)
+		lrc := BuildLyricFilename(c.artist, c.title)
+
+		baseMP3 := strings.TrimSuffix(mp3, ".mp3")
+		baseLRC := strings.TrimSuffix(lrc, ".lrc")
+		if baseMP3 != baseLRC {
+			t.Errorf("主体不一致:\n mp3 = %q\n lrc = %q", baseMP3, baseLRC)
+		}
+		if !strings.HasSuffix(mp3, ".mp3") {
+			t.Errorf("BuildFilename 结果 %q 应以 .mp3 结尾", mp3)
+		}
+		if !strings.HasSuffix(lrc, ".lrc") {
+			t.Errorf("BuildLyricFilename 结果 %q 应以 .lrc 结尾", lrc)
+		}
+	}
+}

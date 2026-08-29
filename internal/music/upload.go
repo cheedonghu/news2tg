@@ -205,12 +205,16 @@ var filenameReplacer = strings.NewReplacer(
 	"\r", " ",
 )
 
-// BuildFilename 拼出 "<歌手> - <歌名>.mp3"。
+// buildBase 拼出文件名主体（不含扩展名）：清洗危险字符、兜底、按 rune 截断。
 //
-// 为什么必须清洗：歌名里的 '/' 会被 WebDAV 当成路径分隔符，
-// 把文件写到一个意料之外的子目录里（甚至 404）。其余字符是 Windows
-// 文件名非法字符，网盘客户端同步下来会出问题。
-func BuildFilename(artist, title string) string {
+// 抽出来是为了 .mp3 与 .lrc 共用**同一个**主体。两个文件名必须逐字一致
+// （含截断结果），播放器才能靠"同目录同名"把歌词配给音频；差一个字就永远
+// 配不上，而且不会有任何报错。这个函数就是那条约束唯一的保障点。
+//
+// 为什么必须清洗：歌名里的 '/' 会被 WebDAV 当成路径分隔符，把文件写到一个
+// 意料之外的子目录里（甚至 404）。其余字符是 Windows 文件名非法字符，
+// 网盘客户端同步下来会出问题。
+func buildBase(artist, title string) string {
 	a := strings.TrimSpace(filenameReplacer.Replace(artist))
 	tt := strings.TrimSpace(filenameReplacer.Replace(title))
 	base := strings.TrimSpace(a + " - " + tt)
@@ -220,5 +224,15 @@ func BuildFilename(artist, title string) string {
 		base = "unknown"
 	}
 	// TruncateUTF8 按 rune 截断，绝不会把一个中文字符切成两半。
-	return tools.TruncateUTF8(base, maxFilenameRunes) + ".mp3"
+	return tools.TruncateUTF8(base, maxFilenameRunes)
+}
+
+// BuildFilename 拼出 "<歌手> - <歌名>.mp3"。
+func BuildFilename(artist, title string) string {
+	return buildBase(artist, title) + ".mp3"
+}
+
+// BuildLyricFilename 拼出 "<歌手> - <歌名>.lrc"，与 BuildFilename 同主体。
+func BuildLyricFilename(artist, title string) string {
+	return buildBase(artist, title) + ".lrc"
 }
