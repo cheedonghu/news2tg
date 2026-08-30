@@ -10,8 +10,17 @@ A Go service that scrapes V2EX and Hacker News, then pushes posts to a Telegram 
 
 ```bash
 go mod tidy                                   # sync deps
-go build -o bin/news2tg ./cmd/news2tg # build (binary name = directory name)
-./bin/news2tg -c config.toml              # run; -c / --config selects the TOML file
+go build -o bin/news2tg ./cmd/news2tg          # build (binary name = directory name)
+./bin/news2tg -c config.toml                  # run; -c / --config selects the TOML file
+
+# ⚠️ Windows：`-o` 给了显式文件名时 Go **不会**自动补 `.exe`，上面那条命令产出的是
+# 无扩展名的 `bin/news2tg`。若目录里还留着一个旧的 `bin/news2tg.exe`（比如早先用
+# 不带 `-o` 的 `go build` 生成的），它**不会被覆盖**，而人在 Windows 上又会很自然地
+# 去敲 `./bin/news2tg.exe` —— 于是跑的是几天前的旧二进制，新功能"看起来没生效"，
+# 日志里却一条错误都没有。这个坑真实发生过（2026-08-30，/music 歌词功能）。
+# Windows 上请显式带扩展名，保证跑的就是刚编的那个：
+go build -o bin/news2tg.exe ./cmd/news2tg     # Windows
+./bin/news2tg.exe -c config.toml
 
 go test -short ./...                          # all tests, skipping live-API e2e (see note below)
 go test ./internal/monitor                    # one package
