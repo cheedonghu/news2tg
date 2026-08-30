@@ -118,9 +118,21 @@ func (r *Runner) Run(ctx context.Context, chatID int64, query string) error {
 	filename := BuildFilename(track.Artist, track.Title)
 	lrcName := BuildLyricFilename(track.Artist, track.Title)
 
-	// 先把选定的曲目显示出来，此刻还没进入上传阶段。
+	// 把 finalize 产出的那个 Track（歌手/歌名已被模型规范化、带上了 Tokens）
+	// 换进快照，后面每一帧都用它。
+	//
+	// 这里**刻意不发帧**。agent 的 doDownload 在下载成功时已经用同一份 st
+	// 发过一帧了，而那时的 Stage 同样是 StageDownloading、Track 的可见字段
+	// （歌手/歌名/时长/字节数/源）也一模一样 —— 中文歌的"规范化"结果通常
+	// 就等于站点原名，Tokens 又只在终态才渲染。于是这一帧渲染出来与上一帧
+	// 逐字相同，Telegram 直接回 "message is not modified"，白记一条 ERROR、
+	// 白占一次 1.5s 的全局发送锁，每次 /music 都要来一遍。
+	// agent.go 的 Fetch 开头有一模一样的取舍（它也因此不发首帧），
+	// 别再把这行加回来。
+	// 代价：模型真的改了名字时（"Jay Chou" → "周杰伦"）新名字要等到下面
+	// 取词结束那一帧才显示，通常 2s 内，最坏 lyricTimeout 30s。可以接受 ——
+	// 那一帧本来就必须发（它带着歌词结果和阶段变化，是真有新信息的）。
 	st.Track = track
-	rep.Update(ctx, *st)
 
 	// 取歌词。单独套一层短超时（它只是一次 JSON 请求），且**永不阻断** ——
 	// Save 的签名里根本没有 error，拿不到词照样把歌传上去。
