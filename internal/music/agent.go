@@ -487,6 +487,13 @@ func (r *run) doDownload(ctx context.Context, srcName, rawArgs string) string {
 		Duration:  c.Duration,
 		Bytes:     n,
 		Source:    srcName,
+		// 取词凭据：Runner 稍后拿它们去问这个音源要歌词。
+		// 在这里填是因为此刻 src 和 c 正好都在手上；出了这个函数就得
+		// 靠一张注册表按名字回查，那会多出一个"查不到"的分支。
+		// 这两个字段跟 Track 的其它字段一样，一旦交出去就再不改动
+		// （见 report.go 对 Status 快照自洽的说明）。
+		src:  src,
+		cand: c,
 	}
 	r.downloadedID = c.ID
 	r.st.Track = r.track

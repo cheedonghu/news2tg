@@ -31,6 +31,17 @@ type Target struct {
 	URL  string // 目录地址，如 http://alist:5244/dav/aliyun/Music
 }
 
+// UploadFile 是一次任务里要传给每个目标的一个文件。
+type UploadFile struct {
+	LocalPath   string // 本地路径
+	Filename    string // 传到目标上的文件名（会被 url.PathEscape 转义）
+	ContentType string // 如 "audio/mpeg" / "text/plain; charset=utf-8"
+	// Optional 为 true 表示这个文件传失败**不算目标失败**。
+	// 歌词就是这样的附赠品：不能因为一个 .lrc 没传上去，就把已经传好的
+	// 歌判成失败 —— 那和"不为一个网盘挂掉丢弃已下好的歌"是同一条约定。
+	Optional bool
+}
+
 // Uploader 把本地文件并发 PUT 到所有目标。
 //
 // 注意：内部是按 []Target 循环的，不硬编码"两个"。
@@ -56,15 +67,20 @@ func NewUploader(httpClient *http.Client, targets []Target, user, pass string) *
 	}
 }
 
-// Upload 并发把 localPath 传到所有目标。
+// Upload 并发把 files 传到所有目标。
 //
-// onProgress 在初始时以及**每个目标完成时**各回调一次，参数是当前所有目标状态的
-// 快照副本（不是内部切片本身，调用方随便读不用担心竞态）。可传 nil。
+// files 的顺序有意义：每个目标**顺序**传自己那份，排在前面的先落地。
+// 调用方应把要紧的文件放在前面（mp3 在前、歌词在后）——ctx 中途断掉时，
+// 先传完的是要紧那个。
+//
+// onProgress 在初始时以及**每个目标完成时**各回调一次，参数是当前所有目标
+// 状态的快照副本（不是内部切片本身，调用方随便读不用担心竞态）。可传 nil。
 //
 // 返回值：最终状态切片总是返回（哪怕全失败，调用方要靠它渲染每个目标的成败）；
 // error 仅在**所有**目标都失败时才非 nil —— 至少一个成功就算任务成功，
 // 延续仓库"AI/digest 失败不阻断推送"的既有约定，不为一个网盘挂掉丢弃已下好的歌。
-func (u *Uploader) Upload(ctx context.Context, localPath, filename string, onProgress func([]TargetStatus)) ([]TargetStatus, error) {
+// 注意"目标失败"只由**必传**文件决定：可选文件失败只记进 TargetStatus.Warn。
+func (u *Uploader) Upload(ctx context.Context, files []UploadFile, onProgress func([]TargetStatus)) ([]TargetStatus, error) {
 	states := make([]TargetStatus, len(u.targets))
 	for i, t := range u.targets {
 		// 初始状态是"排队中"而不是"上传中"：这一刻一个 goroutine 都还没起，
@@ -109,9 +125,10 @@ func (u *Uploader) Upload(ctx context.Context, localPath, filename string, onPro
 			cctx, cancel := context.WithTimeout(ctx, u.timeout)
 			defer cancel()
 
-			err := u.putOne(cctx, tg, localPath, filename)
+			warn, err := u.putAll(cctx, tg, files)
 
 			mu.Lock()
+			states[idx].Warn = warn
 			if err != nil {
 				states[idx].State = TargetFailed
 				states[idx].Err = err.Error()
@@ -121,9 +138,9 @@ func (u *Uploader) Upload(ctx context.Context, localPath, filename string, onPro
 			mu.Unlock()
 
 			if err != nil {
-				slog.ErrorContext(ctx, "WebDAV 上传失败", "target", tg.Name, "file", filename, "err", err)
+				slog.ErrorContext(ctx, "WebDAV 上传失败", "target", tg.Name, "err", err)
 			} else {
-				slog.InfoContext(ctx, "WebDAV 上传成功", "target", tg.Name, "file", filename)
+				slog.InfoContext(ctx, "WebDAV 上传成功", "target", tg.Name, "files", len(files), "warn", warn)
 			}
 			notify()
 		}(i, t)
@@ -146,11 +163,38 @@ func (u *Uploader) Upload(ctx context.Context, localPath, filename string, onPro
 	return final, nil
 }
 
-// putOne 把本地文件 PUT 到单个目标。
-func (u *Uploader) putOne(ctx context.Context, t Target, localPath, filename string) error {
-	// 每个目标各自打开一次文件：*os.File 内部有共享的读偏移量，
+// putAll 把 files 依次传到一个目标。
+//
+// 返回 (可选文件的失败说明, 必传文件的失败)。error 非 nil 表示这个目标失败了。
+//
+// 为什么顺序传而不是并发：同一个目标就那么点带宽，并发只会互相抢；而且
+// 顺序执行才能兑现"必传文件失败后不再传后面的"——那个目标已经废了，
+// 继续传歌词是白占一次请求。
+func (u *Uploader) putAll(ctx context.Context, t Target, files []UploadFile) (string, error) {
+	var warn string
+	for _, f := range files {
+		err := u.putOne(ctx, t, f)
+		if err == nil {
+			continue
+		}
+		if !f.Optional {
+			// 必传文件失败：这个目标已经废了，不必再传后面的。
+			return warn, err
+		}
+		// 可选文件失败：目标仍算成功，只留一句说明。
+		// 多个可选文件都失败时后一条覆盖前一条 —— 目前只有一个可选文件
+		// （歌词），真出现多个再改成拼接也不迟。
+		slog.ErrorContext(ctx, "可选文件上传失败", "target", t.Name, "file", f.Filename, "err", err)
+		warn = f.Filename + ": " + err.Error()
+	}
+	return warn, nil
+}
+
+// putOne 把单个文件 PUT 到单个目标。
+func (u *Uploader) putOne(ctx context.Context, t Target, uf UploadFile) error {
+	// 每个文件各自打开一次：*os.File 内部有共享的读偏移量，
 	// 多个 goroutine 拿同一个 *os.File 当 body 会互相把对方的读位置搅乱。
-	f, err := os.Open(localPath)
+	f, err := os.Open(uf.LocalPath)
 	if err != nil {
 		return fmt.Errorf("打开本地文件失败: %w", err)
 	}
@@ -163,7 +207,7 @@ func (u *Uploader) putOne(ctx context.Context, t Target, localPath, filename str
 
 	// url.PathEscape 转义文件名里的空格、中文等，避免拼出非法 URL。
 	// TrimRight 去掉配置里可能多写的尾斜杠，防止出现 //。
-	dst := strings.TrimRight(t.URL, "/") + "/" + url.PathEscape(filename)
+	dst := strings.TrimRight(t.URL, "/") + "/" + url.PathEscape(uf.Filename)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, dst, f)
 	if err != nil {
@@ -173,7 +217,9 @@ func (u *Uploader) putOne(ctx context.Context, t Target, localPath, filename str
 	// 部分 WebDAV 服务端（含某些 alist 后端）会直接拒绝。
 	req.ContentLength = fi.Size()
 	req.SetBasicAuth(u.user, u.pass)
-	req.Header.Set("Content-Type", "audio/mpeg")
+	// 每个文件用自己的类型：歌词是文本，声明成 audio/mpeg 会让某些
+	// WebDAV 后端存成二进制、下载回来变成乱码。
+	req.Header.Set("Content-Type", uf.ContentType)
 
 	resp, err := u.httpClient.Do(req)
 	if err != nil {
@@ -205,12 +251,16 @@ var filenameReplacer = strings.NewReplacer(
 	"\r", " ",
 )
 
-// BuildFilename 拼出 "<歌手> - <歌名>.mp3"。
+// buildBase 拼出文件名主体（不含扩展名）：清洗危险字符、兜底、按 rune 截断。
 //
-// 为什么必须清洗：歌名里的 '/' 会被 WebDAV 当成路径分隔符，
-// 把文件写到一个意料之外的子目录里（甚至 404）。其余字符是 Windows
-// 文件名非法字符，网盘客户端同步下来会出问题。
-func BuildFilename(artist, title string) string {
+// 抽出来是为了 .mp3 与 .lrc 共用**同一个**主体。两个文件名必须逐字一致
+// （含截断结果），播放器才能靠"同目录同名"把歌词配给音频；差一个字就永远
+// 配不上，而且不会有任何报错。这个函数就是那条约束唯一的保障点。
+//
+// 为什么必须清洗：歌名里的 '/' 会被 WebDAV 当成路径分隔符，把文件写到一个
+// 意料之外的子目录里（甚至 404）。其余字符是 Windows 文件名非法字符，
+// 网盘客户端同步下来会出问题。
+func buildBase(artist, title string) string {
 	a := strings.TrimSpace(filenameReplacer.Replace(artist))
 	tt := strings.TrimSpace(filenameReplacer.Replace(title))
 	base := strings.TrimSpace(a + " - " + tt)
@@ -220,5 +270,15 @@ func BuildFilename(artist, title string) string {
 		base = "unknown"
 	}
 	// TruncateUTF8 按 rune 截断，绝不会把一个中文字符切成两半。
-	return tools.TruncateUTF8(base, maxFilenameRunes) + ".mp3"
+	return tools.TruncateUTF8(base, maxFilenameRunes)
+}
+
+// BuildFilename 拼出 "<歌手> - <歌名>.mp3"。
+func BuildFilename(artist, title string) string {
+	return buildBase(artist, title) + ".mp3"
+}
+
+// BuildLyricFilename 拼出 "<歌手> - <歌名>.lrc"，与 BuildFilename 同主体。
+func BuildLyricFilename(artist, title string) string {
+	return buildBase(artist, title) + ".lrc"
 }

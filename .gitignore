@@ -16,6 +16,7 @@ output.txt
 # Local config (user-specific secrets)
 myconfig.toml
 config.local.toml
+config.prod.toml
 
 # Editor / OS
 .idea/

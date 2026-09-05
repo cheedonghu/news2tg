@@ -636,3 +636,90 @@ func TestRenderStatusKeepsDurationWhenPresent(t *testing.T) {
 		t.Errorf("有时长时应当显示出来:\n%s", md)
 	}
 }
+
+// TestRenderStatusLyricLines 锁死歌词那一行的四种措辞。
+//
+// 四种结局在界面上必须是四句不同的话：合并之后，日后音源改版导致歌词
+// 永远取不到时，跟"这首歌真的没词"长得一模一样，没人会发现有东西坏了。
+func TestRenderStatusLyricLines(t *testing.T) {
+	base := Status{
+		Query: "晴天",
+		Stage: StageUploading,
+		Track: &Track{Artist: "周杰伦", Title: "晴天", Bytes: 100, Source: "mp3pm"},
+	}
+
+	cases := []struct {
+		name string
+		l    LyricStatus
+		want string
+	}{
+		{"成功", LyricStatus{State: LyricOK}, "✅ 歌词"},
+		{"音源不供词", LyricStatus{State: LyricUnsupported}, "mp3pm 不提供"},
+		{"站点未收录", LyricStatus{State: LyricMissing}, "站点未收录"},
+		{"取词失败", LyricStatus{State: LyricFailed, Err: "被 Cloudflare 拦截"}, "歌词获取失败"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := base
+			l := c.l
+			s.Lyric = &l
+			got := renderStatus(s)
+			if !strings.Contains(got, c.want) {
+				t.Errorf("渲染结果里没有 %q，实际:\n%s", c.want, got)
+			}
+		})
+	}
+}
+
+// TestRenderStatusNoLyricLineWhenNil 验证：还没跑到取词那一步时（Lyric 为 nil），
+// 歌词那一行完全不出现 —— 不能显示一个"无歌词"去误导用户。
+func TestRenderStatusNoLyricLineWhenNil(t *testing.T) {
+	s := Status{
+		Query: "晴天",
+		Stage: StageDownloading,
+		Track: &Track{Artist: "周杰伦", Title: "晴天", Source: "musicso"},
+	}
+	if got := renderStatus(s); strings.Contains(got, "歌词") {
+		t.Errorf("Lyric 为 nil 时不该出现歌词行，实际:\n%s", got)
+	}
+}
+
+// TestRenderStatusLyricFailedEscapes 验证：失败原因里的 MarkdownV2 特殊字符
+// 必须被转义。整条消息是预渲染的 MarkdownV2，Editor 不会再整体转义 ——
+// 漏转义会让 Telegram 直接拒收整条消息，进度就此卡死。
+func TestRenderStatusLyricFailedEscapes(t *testing.T) {
+	l := LyricStatus{State: LyricFailed, Err: "cf-ray=a2f2_36c9 (challenge)"}
+	s := Status{
+		Query: "x",
+		Stage: StageUploading,
+		Track: &Track{Artist: "A", Title: "T", Source: "musicso"},
+		Lyric: &l,
+	}
+	got := renderStatus(s)
+	// '-'、'_'、'('、')'、'=' 都是 MarkdownV2 的保留字符，必须带反斜杠。
+	if !strings.Contains(got, `cf\-ray`) {
+		t.Errorf("失败原因未被转义，实际:\n%s", got)
+	}
+}
+
+// TestRenderStatusTargetWarn 验证：可选文件（歌词）没传上去时，
+// 目标行仍显示成功，但带一句警告 —— 不能因为附赠品失败就把目标标成失败。
+func TestRenderStatusTargetWarn(t *testing.T) {
+	l := LyricStatus{State: LyricOK}
+	s := Status{
+		Query: "x",
+		Stage: StageDone,
+		Track: &Track{Artist: "A", Title: "T", Source: "musicso"},
+		Lyric: &l,
+		Targets: []TargetStatus{
+			{Name: "阿里云盘", State: TargetOK, Warn: "A - T.lrc: WebDAV 返回 507"},
+		},
+	}
+	got := renderStatus(s)
+	if !strings.Contains(got, "歌词未传上") {
+		t.Errorf("目标行应带歌词未传上的警告，实际:\n%s", got)
+	}
+	if !strings.Contains(got, "507") {
+		t.Errorf("警告里应保留原因，实际:\n%s", got)
+	}
+}

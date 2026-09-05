@@ -197,3 +197,14 @@ func (m *Mp3PM) Download(ctx context.Context, c Candidate, w io.Writer) (int64, 
 	}
 	return n, nil
 }
+
+// Lyric 明确表态：mp3.pm 不供歌词。
+//
+// 实测该站的结果页和详情页里都没有歌词可抓；而"拿歌名跨站去别处配词"
+// 不在本次范围内（见 source.go 对 Lyric 的说明）。
+//
+// 返回哨兵而不是 ("", nil)，是为了让进度消息能说出"mp3pm 不提供"，
+// 而不是含糊的"没有歌词"——后者会跟"这首歌真的没词"混为一谈。
+func (m *Mp3PM) Lyric(_ context.Context, _ Candidate) (string, error) {
+	return "", errLyricUnsupported
+}

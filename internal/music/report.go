@@ -59,11 +59,63 @@ const (
 	TargetFailed                     // 失败
 )
 
+// LyricState 是取歌词这一步的结局。
+type LyricState int
+
+const (
+	LyricUnsupported LyricState = iota // 该音源不提供歌词（如 mp3pm）
+	LyricMissing                       // 音源供词，但站点没收录这首
+	LyricOK                            // 拿到并落盘了
+	LyricFailed                        // 请求/解析/落盘出错
+)
+
+// String 让 LyricState 能打出人话，而不是裸整数（"lyric":0 排障时认不出是哪个状态）。
+//
+// ⚠️ 调用点必须**显式**调它，见 runner.go 的 slog.String("lyric", lyricSt.State.String())。
+// 光实现 fmt.Stringer 是不够的：本进程装的是 slog.NewJSONHandler（main.init），
+// 而 JSONHandler 对 KindAny 的值走的是 json.Marshal，**不认** fmt.Stringer ——
+// LyricState 底层是 int，于是照样被编成数字。只有 TextHandler 才会通过它的
+// %+v 兜底路径调到 String()。实测：
+//
+//	JSONHandler → {"lyric":2}      TextHandler → lyric=已获取
+//
+// 想让它对 JSON 也自动生效的话得实现 slog.LogValuer 而不是 fmt.Stringer；
+// 眼下只有一个调用点，显式转更直白，不值得为此多引一个接口。
+func (s LyricState) String() string {
+	switch s {
+	case LyricUnsupported:
+		return "不供词"
+	case LyricMissing:
+		return "未收录"
+	case LyricOK:
+		return "已获取"
+	case LyricFailed:
+		return "获取失败"
+	default:
+		// 兜底带上数字，方便对照上面的 iota 定义排查是不是漏改了这个方法。
+		return fmt.Sprintf("未知(%d)", int(s))
+	}
+}
+
+// LyricStatus 是取歌词这一步的快照。
+//
+// 为什么是四态而不是一个 bool：见 lyric.go 里 errLyricUnsupported 的注释 ——
+// "音源不供词"和"站点没这首的词"在界面上必须是两句不同的话。
+type LyricStatus struct {
+	State LyricState
+	Err   string // 仅 LyricFailed 时非空
+}
+
 // TargetStatus 是单个上传目标的快照。
 type TargetStatus struct {
 	Name  string      // 展示名，如 "阿里云盘"
 	State TargetState //
 	Err   string      // 失败原因，成功时为空
+	// Warn 是**可选文件**（目前只有歌词）没传上去时的说明。
+	// 它跟 Err 是两回事：Err 非空意味着这个目标失败了，Warn 非空时目标
+	// 仍然是成功的 —— 不能因为一个附赠的 .lrc 没传上去，就把已经传好的
+	// 歌判成失败（延续"不为一个网盘挂掉丢弃已下好的歌"那条既有约定）。
+	Warn string
 }
 
 // Track 是 agent 产出的"已下载好的曲目"。
@@ -78,6 +130,19 @@ type Track struct {
 	Bytes     int64  // 实际写入字节数（不信任 Content-Length）
 	Source    string // 源标识，如 "mp3pm"
 	Tokens    int    // 本次任务累计消耗的 token
+
+	// src / cand 是包内私有的取词凭据，由 agent 在下载成功那一刻填好
+	// （见 agent.go 的 doDownload），此后再没人改过。
+	//
+	// 为什么把音源本身带在 Track 上，而不是让 Runner 另持一张
+	// map[string]Source 注册表按 Source 名字去查：那样会多出一个
+	// "查不到"的分支 —— 一个本不该发生、却必须写代码应付的状态。
+	// 带着走，这个状态从根上就不存在。
+	//
+	// Candidate 里的 dlURL / dlCookie 本来就是包内可见、绝不出包、
+	// 绝不进模型上下文的，挂在这里不改变那条约束。
+	src  Source
+	cand Candidate
 }
 
 // Status 是一次任务的**完整快照**。
@@ -105,7 +170,10 @@ type Status struct {
 	Found    int            // 最近一次搜索的候选数
 	Track    *Track         // 选定并下载后才非 nil
 	Targets  []TargetStatus // 上传目标状态，上传阶段才非空
-	Err      string         // 失败原因
+	// Lyric 是取歌词那一步的结果。nil = 还没跑到这一步（用指针的理由同 Track：
+	// nil 在这里是有语义的，换成值类型就得再引入一个布尔量去人肉维持一致）。
+	Lyric *LyricStatus
+	Err   string // 失败原因
 }
 
 // Reporter 是一次任务的进度出口。
@@ -389,6 +457,12 @@ func renderStatus(s Status) string {
 		b.WriteString(stageIcon(s.Track.Bytes > 0) + " " + esc(line) + "\n")
 	}
 
+	// 歌词行：跑到取词这一步才有。nil 表示还没轮到它，整行不出现 ——
+	// 提前显示一个"无歌词"会误导用户以为已经查过了。
+	if s.Lyric != nil {
+		b.WriteString(renderLyricLine(*s.Lyric, s.Track) + "\n")
+	}
+
 	// 上传区：每个目标一行。
 	if len(s.Targets) > 0 {
 		b.WriteString("⬆️ 上传\n")
@@ -396,6 +470,10 @@ func renderStatus(s Status) string {
 			line := "   " + targetIcon(t.State) + " " + esc(t.Name)
 			if t.Err != "" {
 				line += esc(": " + tools.TruncateUTF8(t.Err, 80))
+			}
+			// Warn 与 Err 互不排斥：目标成功但歌词没传上去时只有 Warn。
+			if t.Warn != "" {
+				line += esc(" ⚠️ 歌词未传上: " + tools.TruncateUTF8(t.Warn, 80))
 			}
 			b.WriteString(line + "\n")
 		}
@@ -411,6 +489,43 @@ func renderStatus(s Status) string {
 	}
 
 	return b.String()
+}
+
+// renderLyricLine 渲染歌词那一行。
+//
+// 抽成独立函数是因为四个分支各有各的措辞，塞进 renderStatus 会把那个
+// 已经不短的函数再撑大一截、盖住主线。
+//
+// 转义约定同 renderStatus：动态文本必须自己 EscapeMarkdownV2，
+// 只有我们主动写的标记才留着不转义。这里的 emoji 和固定汉字不需要转义，
+// 但源名和错误原因是动态的，必须过一遍。
+func renderLyricLine(l LyricStatus, t *Track) string {
+	esc := tools.EscapeMarkdownV2
+
+	switch l.State {
+	case LyricOK:
+		return "✅ 歌词"
+	case LyricUnsupported:
+		// 源名取自 Track。理论上走到这一步 Track 一定非空（取词发生在下载之后），
+		// 兜个底只是不想让一个渲染函数有 panic 的可能。
+		src := "该音源"
+		if t != nil && t.Source != "" {
+			src = t.Source
+		}
+		return "➖ " + esc("歌词："+src+" 不提供")
+	case LyricMissing:
+		return "➖ " + esc("歌词：站点未收录")
+	case LyricFailed:
+		return "⚠️ " + esc("歌词获取失败: "+tools.TruncateUTF8(l.Err, 80))
+	default:
+		// 显式列出四个已知状态，default 只兜将来新增的状态（比如某天多一个
+		// LyricXxx）——写成 `default: // LyricFailed` 会让新状态被静默地
+		// 渲染成"歌词获取失败"，界面上看不出任何异常，只有本该看到的新文案
+		// 消失了。这里用带数字的兜底文案，日志/截图排障时至少能定位到
+		// 是哪个未知枚举值，而不是伪装成一个已知状态。
+		// 不 panic：这个函数跑在 /music 那个 detached goroutine 上，没有 recover。
+		return "❓ " + esc(fmt.Sprintf("歌词：未知状态 %d", l.State))
+	}
 }
 
 // searchDone 判断"搜索这一步是否已经走完"，决定搜索行打勾还是显示进行中。

@@ -9,6 +9,7 @@
 //	musicso.go  Source 的 musicso.cc 实现，中文站，聚合 QQ 音乐与网易云
 //	agent.go    LLM 工具调用循环
 //	upload.go   WebDAV 并发上传
+//	lyric.go    取歌词并落盘（Source.Lyric 的编排层）
 //	report.go   进度快照与上报
 //	runner.go   把上面几件事串起来的编排层
 //
@@ -73,4 +74,19 @@ type Source interface {
 	Search(ctx context.Context, query string) ([]Candidate, error)
 	// Download 把候选的音频字节写进 w，返回实际写入字节数。
 	Download(ctx context.Context, c Candidate, w io.Writer) (int64, error)
+	// Lyric 取回该候选的歌词文本。
+	//
+	// 两种"没有歌词"必须分开表达，它们在进度消息里是不同的两句话：
+	//   - 本音源压根不供词（如 mp3.pm）→ 返回 errLyricUnsupported 哨兵
+	//   - 供词，但站点没收录这首 → 返回 ("", nil)，正常路径不是错误
+	//
+	// 歌词长在 Source 上而不是另开一个可选接口，是刻意的：可选接口那种
+	// "实现了就自动生效、没实现就静默没有"很容易在加音源时漏掉，而漏掉的
+	// 表现是"这个源下的歌永远没词"这种没人会去查的静默缺失。写进接口以后，
+	// 编译器会替我们向每个新音源作者要这个答案。
+	//
+	// 代价是接口宽了一格，且**只供词、不供歌**的站（比如专门的 LRC API）
+	// 没法直接接进来 —— 那种站不是 Source，没有 Search/Download 可实现。
+	// 这是已知取舍，真需要那天再引入独立的歌词接口。
+	Lyric(ctx context.Context, c Candidate) (string, error)
 }

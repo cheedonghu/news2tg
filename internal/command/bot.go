@@ -30,10 +30,13 @@ const (
 // summarizeTimeout 单条 /summary 指令调 agent 的超时（agent 可能多轮调模型，给宽松点）。
 const summarizeTimeout = 180 * time.Second
 
-// musicTimeout 是一次 /music 任务的**总**预算：
-// 内部还有 agent 循环 180s、每个 WebDAV 目标 300s 两层更细的超时，
-// 这一层是兜底，防止某条任务永久挂着占资源。
-const musicTimeout = 600 * time.Second
+// musicTimeout 是一次 /music 任务的**总**预算。
+//
+// 内部三层各管各的时限，账要算清楚才不会互相踩：
+// agent 循环 300s（runner.go 的 agentTimeout）+ 取歌词 30s（runner.go 的
+// lyricTimeout）+ 上传 300s（upload.go 的 targetUploadTimeout）= 630s，
+// 这一层留 30s 余量，防止某条任务永久挂着占资源。
+const musicTimeout = 660 * time.Second
 
 // Summarizer 是消费侧接口（"accept interfaces"）：本包只依赖"网址 → 总结"这一能力，
 // 不直接 import agent 包。*agent.Agent 天然满足。

@@ -20,9 +20,20 @@ import (
 // "超时失败"，白烧前面几轮的 token。
 // ⚠️ 改 agent.go 的 defaultMaxSteps 时必须回头检查这个值是否还够用——
 // 两个常量是耦合的，只调一个就会重演上面这个问题。
-// 外层 command.Bot 的 musicTimeout 是 600s（bot.go），其中还包含 Uploader
-// 按目标各自计的上传超时（300s/目标），300s 在这个总预算里仍有余量。
+// 外层 command.Bot 的 musicTimeout 是 660s（bot.go）：agent 300s + 取词 30s
+// （lyricTimeout）+ 上传 300s（Uploader 按目标各自计的 targetUploadTimeout）
+// = 630s，660s 的总预算留了 30s 余量。
 const agentTimeout = 300 * time.Second
+
+// lyricTimeout 是取歌词那一步的超时。
+//
+// 它就是一次 JSON 请求（musicso 的 play.php），几百毫秒的事，正常情况下
+// 远远用不满 30s。这 30s 是**单独计入**外层 command.Bot 总预算的一份 ——
+// musicTimeout 已经把 agent 300s + 取词 30s + 上传 300s 三段都算了进去
+// （合计 630s，660s 留 30s 余量），不是白嫖别的步骤的余量。
+// 同 agentTimeout / targetUploadTimeout 的套路：每一步各管各的时限，
+// 一步卡住不拖垮后面的步骤。
+const lyricTimeout = 30 * time.Second
 
 // fetcher / uploader 是**消费侧接口**（"accept interfaces"）：
 // Runner 只依赖这两件能力，不直接绑死 *Agent / *Uploader 的具体类型。
@@ -32,19 +43,35 @@ type fetcher interface {
 }
 
 type uploader interface {
-	Upload(ctx context.Context, localPath, filename string, onProgress func([]TargetStatus)) ([]TargetStatus, error)
+	Upload(ctx context.Context, files []UploadFile, onProgress func([]TargetStatus)) ([]TargetStatus, error)
 }
 
-// Runner 把 agent、上传、进度上报串成一次完整的 /music 任务。
+// lyricSaver 同 fetcher / uploader，也是消费侧接口：Runner 只依赖
+// "取词并落盘"这一件能力，测试塞个 fake 就能脱离网络验编排。
+//
+// 注意它**不返回 error** —— 歌词是附赠品，编排层在类型层面就没有
+// "把它当致命错误"的选项（见 lyric.go 对 Save 的说明）。
+type lyricSaver interface {
+	Save(ctx context.Context, t *Track, dir, filename string) (string, LyricStatus)
+}
+
+// Runner 把 agent、取词、上传、进度上报串成一次完整的 /music 任务。
 type Runner struct {
 	fetcher  fetcher
 	uploader uploader
+	lyrics   lyricSaver
 	editor   notify.Editor // 用来给每次任务新建一个 Reporter
 }
 
 // NewRunner 构造函数。收具体类型、存接口，是仓库里一贯的注入风格。
+//
+// lyrics 不出现在参数里、而是在这里装配默认实现：Lyrics 是无状态的，
+// 没有任何依赖需要从外面注入，让 main 去 new 一个空结构体传进来纯属噪音。
+// 测试要替换它时在同包内直接改这个私有字段即可 —— 同 Uploader.timeout /
+// Agent.maxBytes / tgReporter.terminalTimeout 那套"抽成字段以便测试"的做法。
+// 这也是本次改动不用碰 cmd/news2tg/main.go 的原因。
 func NewRunner(a *Agent, u *Uploader, e notify.Editor) *Runner {
-	return &Runner{fetcher: a, uploader: u, editor: e}
+	return &Runner{fetcher: a, uploader: u, lyrics: Lyrics{}, editor: e}
 }
 
 // Run 执行一次完整任务：建临时目录 → agent 搜+下 → 并发上传 → 收尾。
@@ -87,11 +114,40 @@ func (r *Runner) Run(ctx context.Context, chatID int64, query string) error {
 	}
 
 	// 文件名用模型规范化后的歌手/歌名，清洗掉危险字符。
+	// .lrc 与 .mp3 共用同一个主体（见 buildBase），播放器才配得上对。
 	filename := BuildFilename(track.Artist, track.Title)
-	st.Track, st.Stage = track, StageUploading
+	lrcName := BuildLyricFilename(track.Artist, track.Title)
+
+	// 把 finalize 产出的那个 Track（歌手/歌名已被模型规范化、带上了 Tokens）
+	// 换进快照，后面每一帧都用它。
+	//
+	// 这里**刻意不发帧**。agent 的 doDownload 在下载成功时已经用同一份 st
+	// 发过一帧了，而那时的 Stage 同样是 StageDownloading、Track 的可见字段
+	// （歌手/歌名/时长/字节数/源）也一模一样 —— 中文歌的"规范化"结果通常
+	// 就等于站点原名，Tokens 又只在终态才渲染。于是这一帧渲染出来与上一帧
+	// 逐字相同，Telegram 直接回 "message is not modified"，白记一条 ERROR、
+	// 白占一次 1.5s 的全局发送锁，每次 /music 都要来一遍。
+	// agent.go 的 Fetch 开头有一模一样的取舍（它也因此不发首帧），
+	// 别再把这行加回来。
+	// 代价：模型真的改了名字时（"Jay Chou" → "周杰伦"）新名字要等到下面
+	// 取词结束那一帧才显示，通常 2s 内，最坏 lyricTimeout 30s。可以接受 ——
+	// 那一帧本来就必须发（它带着歌词结果和阶段变化，是真有新信息的）。
+	st.Track = track
+
+	// 取歌词。单独套一层短超时（它只是一次 JSON 请求），且**永不阻断** ——
+	// Save 的签名里根本没有 error，拿不到词照样把歌传上去。
+	lctx, lcancel := context.WithTimeout(ctx, lyricTimeout)
+	lrcPath, lyricSt := r.lyrics.Save(lctx, track, dir, lrcName)
+	lcancel() // 不用 defer：后面的上传不该再受取词那层超时约束
+	st.Lyric = &lyricSt
+
+	st.Stage = StageUploading
 	rep.Update(ctx, *st)
 
-	slog.InfoContext(ctx, "开始上传音乐到 WebDAV", "file", filename, "bytes", track.Bytes)
+	// lyric 这一项显式 .String()：JSONHandler 不认 fmt.Stringer，
+	// 直接传枚举值会打成裸整数（详见 report.go 里 LyricState.String 的注释）。
+	slog.InfoContext(ctx, "开始上传音乐到 WebDAV",
+		"file", filename, "bytes", track.Bytes, "lyric", lyricSt.State.String())
 
 	// stMu 只保护上传阶段：Uploader 内部给每个目标起一个 goroutine，
 	// onProgress（也就是这里的回调）在 wg.Wait() 返回之前会被这些 goroutine
@@ -103,7 +159,24 @@ func (r *Runner) Run(ctx context.Context, chatID int64, query string) error {
 	// 锁只护住共享字段的读写，不覆盖 rep.Update 的网络 IO：Update 里还有
 	// Telegram 的节流/发送逻辑，锁着它会让并发的另一次回调白等一次 IO。
 	var stMu sync.Mutex
-	targets, upErr := r.uploader.Upload(ctx, track.LocalPath, filename, func(ts []TargetStatus) {
+	// mp3 排在第一个：Uploader 按顺序传，ctx 中途断掉时先落地的是要紧那个。
+	files := []UploadFile{{
+		LocalPath:   track.LocalPath,
+		Filename:    filename,
+		ContentType: "audio/mpeg",
+	}}
+	if lrcPath != "" {
+		// Optional：歌词传不上去不该把这个目标判成失败
+		// （见 upload.go 里 UploadFile.Optional 的说明）。
+		files = append(files, UploadFile{
+			LocalPath:   lrcPath,
+			Filename:    lrcName,
+			ContentType: "text/plain; charset=utf-8",
+			Optional:    true,
+		})
+	}
+
+	targets, upErr := r.uploader.Upload(ctx, files, func(ts []TargetStatus) {
 		// 每个目标状态一变就刷进度。Reporter 内部会节流，这里放心调。
 		stMu.Lock()
 		st.Targets = ts
