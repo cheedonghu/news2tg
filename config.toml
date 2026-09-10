@@ -29,8 +29,18 @@ weather_enabled = false
 weather_push_time = "07:00"
 # 城市编码列表（101010100=北京 101280101=广州；编码可在 weather.com.cn 城市页 URL 里找）
 weather_cities = ["101010100"]
-# 每日天气要 @ 的人，"id" 或 "id:显示名"；与 admin_ids 无关
+# 每日天气私聊收件人，"用户id" 或 "用户id:显示名"；与 admin_ids 无关
+# 仅私聊发送，不发频道；空列表不推送。用户需先与机器人开始对话。
 weather_mention = ["123456789:管理员"]
+
+[qweather]
+# 和风控制台提供的 API Host，不带 https://
+api_host = ""
+developer_id = ""
+project_id = ""
+key_id = ""
+# 容器中将私钥与配置一起挂载；本地开发填写本机路径（Windows 可用单引号）。
+private_key_path = "/config/ed25519-private.pem"
 
 [deepseek]
 api_token="key"

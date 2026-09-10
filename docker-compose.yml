@@ -4,7 +4,7 @@ services:
     container_name: news2tg
     volumes:
       # 使用相对路径挂载本地目录（推荐）
-      - ./config:/config
+      - ./config:/config:ro
       # 推送记录数据库；与只读的配置分开，职责清晰
       - ./data:/data
     environment:

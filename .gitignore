@@ -17,6 +17,8 @@ output.txt
 myconfig.toml
 config.local.toml
 config.prod.toml
+# 天气 JWT 私钥不能进入版本控制。
+*.pem
 
 # Editor / OS
 .idea/

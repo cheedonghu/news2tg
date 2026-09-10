@@ -2,12 +2,12 @@
 package config
 
 import (
-	"flag"     // Go 标准库的命令行参数解析（轻量，不像 Cobra 那么重）
-	"fmt"      // 新增：错误包装
-	"net/url"  // 新增：校验 [network] proxy 地址
-	"sort"     // 新增：sources 校验报错信息里给合法音源名排序
-	"strconv"  // 新增：字符串转 int64
-	"strings"  // 新增：按冒号分割 / TrimSpace
+	"flag"    // Go 标准库的命令行参数解析（轻量，不像 Cobra 那么重）
+	"fmt"     // 新增：错误包装
+	"net/url" // 新增：校验 [network] proxy 地址
+	"sort"    // 新增：sources 校验报错信息里给合法音源名排序
+	"strconv" // 新增：字符串转 int64
+	"strings" // 新增：按冒号分割 / TrimSpace
 
 	// BurntSushi/toml 是社区主流的 TOML 解析库。
 	// 通过 struct tag 把 TOML 字段映射到 Go 字段（类似 JSON 的 `json:"xxx"`）。
@@ -62,7 +62,7 @@ type Features struct {
 	WeatherEnabled  bool     `toml:"weather_enabled"`   // 总开关；false 时 weather monitor 直接退出
 	WeatherPushTime string   `toml:"weather_push_time"` // "HH:MM"，空/非法回落 "07:00"
 	WeatherCities   []string `toml:"weather_cities"`    // 城市编码列表，如 "101010100"=北京
-	WeatherMention  []string `toml:"weather_mention"`   // @ 提及列表，"id" 或 "id:显示名"；与 admin_ids 无关
+	WeatherMention  []string `toml:"weather_mention"`   // 私聊收件人，"用户id" 或 "用户id:显示名"；与 admin_ids 无关
 }
 
 // Telegram 段：bot token + 目标 chat + 指令白名单。
@@ -344,6 +344,7 @@ func (m Music) validate() error {
 // Config 是顶层配置结构，对应整个 config.toml。
 // 字段名前的 toml tag 把 Go 字段映射到 TOML 的 [table] 名。
 type Config struct {
+	QWeather QWeather `toml:"qweather"`
 	Telegram Telegram `toml:"telegram"`
 	Features Features `toml:"features"`
 	DeepSeek DeepSeek `toml:"deepseek"`
@@ -351,6 +352,15 @@ type Config struct {
 	Storage  Storage  `toml:"storage"` // 新增
 	Music    Music    `toml:"music"`   // 新增；可选功能，全空即关闭
 	Network  Network  `toml:"network"` // 新增；可选，空即全部直连
+}
+
+// QWeather 保存和风 JWT 配置；私钥只通过文件读取，不放进 TOML。
+type QWeather struct {
+	APIHost        string `toml:"api_host"`
+	DeveloperID    string `toml:"developer_id"`
+	ProjectID      string `toml:"project_id"`
+	KeyID          string `toml:"key_id"`
+	PrivateKeyPath string `toml:"private_key_path"`
 }
 
 // FromFile 读取并解析配置文件。
@@ -404,7 +414,7 @@ func FromFile(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// Mention 是「每日天气要 @ 的人」的解析结果。
+// Mention 是每日天气私聊收件人的解析结果，兼容原 @ 提及配置格式。
 // 它是 weather_mention 配置（[]string）的派生形态：raw 是 "id" 或 "id:显示名"，
 // 解析成结构化的 ID + 显示名。放 config 包是因为它属于配置派生数据，
 // 且 monitor 已经 import config，直接用不产生导入环。
@@ -416,9 +426,10 @@ type Mention struct {
 // ParseMention 把一条 weather_mention 配置解析成 Mention。
 //   - "123456"       → {123456, "管理员"}
 //   - "234567:老王"  → {234567, "老王"}
+//
 // 规则：按第一个 ':' 分割；冒号后为空 / 无冒号 → 显示名回落 "管理员"；id 非法返回 error。
 func ParseMention(s string) (Mention, error) {
-	idPart := s     // 冒号左边（或整串）当 id
+	idPart := s   // 冒号左边（或整串）当 id
 	name := "管理员" // 默认显示名
 	// strings.Index 找第一个 ':' 的下标，找不到返回 -1。
 	if i := strings.Index(s, ":"); i >= 0 {
