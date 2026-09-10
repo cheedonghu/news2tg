@@ -2,8 +2,9 @@ package monitor
 
 import (
 	"context"
+	"errors"
 	"net/http"
-	"net/http/httptest"
+
 	"strings"
 	"testing"
 	"time"
@@ -112,44 +113,29 @@ func TestBuildMessage(t *testing.T) {
 	})
 }
 
-func TestFetchCity(t *testing.T) {
-	// 模拟中国天气网 cityinfo 接口返回。
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/101010100.html") {
-			w.Write([]byte(`{"weatherinfo":{"city":"北京","cityid":"101010100","temp1":"33℃","temp2":"24℃","weather":"多云"}}`))
-			return
-		}
-		http.Error(w, "not found", http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	// 直接用字面量构造，注入测试 baseURL 与 httptest client。
-	wm := &Weather{httpClient: srv.Client(), baseURL: srv.URL}
-
-	t.Run("正常解析", func(t *testing.T) {
-		got, err := wm.fetchCity(context.Background(), "101010100")
-		if err != nil {
-			t.Fatalf("fetchCity 意外报错: %v", err)
-		}
-		if got.Name != "北京" || got.Weather != "多云" || got.High != "33℃" || got.Low != "24℃" {
-			t.Fatalf("解析结果不对: %+v", got)
-		}
-	})
-
-	t.Run("404 → 报错", func(t *testing.T) {
-		if _, err := wm.fetchCity(context.Background(), "999999999"); err == nil {
-			t.Fatalf("非 200 响应应报错")
-		}
-	})
-}
-
 // —— 测试用 fake ——
 
-type fakeNotifier struct{ batch []string }                                               // 捕获发出去的消息
+type fakeNotifier struct {
+	batch        []string
+	chats        []int64
+	defaultCalls int
+	failID       int64
+}
+
 func (f *fakeNotifier) Notify(ctx context.Context, content string) error                 { return nil }
 func (f *fakeNotifier) NotifyTo(ctx context.Context, chatID int64, content string) error { return nil }
 func (f *fakeNotifier) NotifyMarkdown(ctx context.Context, content string) error {
+	f.defaultCalls++
 	f.batch = append(f.batch, content)
+	return nil
+}
+
+func (f *fakeNotifier) NotifyMarkdownTo(ctx context.Context, chatID int64, content string) error {
+	f.chats = append(f.chats, chatID)
+	f.batch = append(f.batch, content)
+	if chatID == f.failID {
+		return errors.New("blocked")
+	}
 	return nil
 }
 
@@ -159,23 +145,15 @@ func (f fakeAdvisor) Advise(ctx context.Context, weatherText string) (string, er
 }
 
 func TestPushOnce(t *testing.T) {
-	// 服务器：101010100 正常，888888888 返回 500（模拟单城市失败）。
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/101010100.html") {
-			w.Write([]byte(`{"weatherinfo":{"city":"北京","temp1":"33℃","temp2":"24℃","weather":"多云"}}`))
-			return
-		}
-		http.Error(w, "boom", http.StatusInternalServerError)
-	}))
-	defer srv.Close()
 
 	t.Run("部分城市失败仍推送好的那个 + 带建议", func(t *testing.T) {
 		fn := &fakeNotifier{}
 		wm := &Weather{
-			httpClient: srv.Client(),
+			httpClient: http.DefaultClient,
 			notifier:   fn,
 			advisor:    fakeAdvisor{out: "北京：多穿点"},
-			baseURL:    srv.URL,
+			mentions:   []config.Mention{{ID: 123}},
+			source:     fakeWeatherSource{},
 		}
 		cfg := &config.Config{Features: config.Features{
 			WeatherCities: []string{"101010100", "888888888"}, // 后者会失败
@@ -201,10 +179,11 @@ func TestPushOnce(t *testing.T) {
 	t.Run("全部城市失败 → 不推送", func(t *testing.T) {
 		fn := &fakeNotifier{}
 		wm := &Weather{
-			httpClient: srv.Client(),
+			httpClient: http.DefaultClient,
 			notifier:   fn,
 			advisor:    fakeAdvisor{out: "x"},
-			baseURL:    srv.URL,
+			mentions:   []config.Mention{{ID: 123}},
+			source:     fakeWeatherSource{},
 		}
 		cfg := &config.Config{Features: config.Features{
 			WeatherCities: []string{"888888888"}, // 唯一城市失败
@@ -217,4 +196,56 @@ func TestPushOnce(t *testing.T) {
 			t.Fatalf("全失败时不应推送，实际推了 %d 条", len(fn.batch))
 		}
 	})
+}
+
+// 收件人路由必须只走私聊：误发默认频道、重复发送或提前中断都会使测试失败。
+func TestWeatherPrivateRecipients(t *testing.T) {
+
+	for _, tc := range []struct {
+		name     string
+		mentions []config.Mention
+		failID   int64
+		want     []int64
+	}{
+		{"逐个私聊并去重", []config.Mention{{ID: 123}, {ID: 456}, {ID: 123}}, 0, []int64{123, 456}},
+		{"失败继续", []config.Mention{{ID: 123}, {ID: 456}}, 123, []int64{123, 456}},
+		{"空名单不发频道", nil, 0, nil},
+		{"拒绝群和无效ID", []config.Mention{{ID: -100123}, {ID: 0}, {ID: 456}}, 0, []int64{456}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fn := &fakeNotifier{failID: tc.failID}
+			wm := &Weather{httpClient: http.DefaultClient, source: fakeWeatherSource{}, advisor: fakeAdvisor{}, notifier: fn, mentions: tc.mentions}
+			cfg := &config.Config{Features: config.Features{WeatherCities: []string{"101010100"}}}
+			err := wm.pushOnce(context.Background(), cfg, "2026-09-10")
+			if (err != nil) != (tc.failID != 0) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if fn.defaultCalls != 0 {
+				t.Fatalf("天气不得发送到默认频道")
+			}
+			if len(fn.chats) != len(tc.want) {
+				t.Fatalf("recipients = %v, want %v", fn.chats, tc.want)
+			}
+			for i, id := range tc.want {
+				if fn.chats[i] != id {
+					t.Fatalf("recipients = %v, want %v", fn.chats, tc.want)
+				}
+			}
+			for _, msg := range fn.batch {
+				if strings.Contains(msg, "tg://user?id=") {
+					t.Fatal("私聊不应包含其他收件人的提及列表")
+				}
+			}
+		})
+	}
+}
+
+// 推送测试只替换天气数据边界；和风 HTTP 与签名在 qweather_test.go 独立验证。
+type fakeWeatherSource struct{}
+
+func (fakeWeatherSource) fetch(ctx context.Context, client *http.Client, code, date string) (cityWeather, error) {
+	if code != "101010100" {
+		return cityWeather{}, errors.New("weather unavailable")
+	}
+	return cityWeather{Name: "北京", Weather: "多云", High: "33℃", Low: "24℃"}, nil
 }

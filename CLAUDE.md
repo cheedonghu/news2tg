@@ -111,6 +111,12 @@ Monitors share a single `*http.Client` (one connection pool) created in `main`. 
 
 ### Config
 
+Weather now uses QWeather GeoAPI + daily v1 with Ed25519 JWT (`internal/monitor/qweather.go`).
+`[qweather]` holds `api_host`, `developer_id`, `project_id`, `key_id`, `private_key_path`.
+Credentials are required only when weather is enabled. Private keys stay outside Git/images.
+`weather_mention` is the private recipient list: weather never sends to the default channel.
+Tests must not make live weather/Telegram calls; use generated test keys and httptest fixtures.
+
 TOML (`internal/config/config.go`), mapped via struct tags. `[telegram]` (incl. `admin_ids` — the `/summary` command whitelist), `[features]` (per-source on/off switches + V2EX keyword/node filters + HN count/time-gap), `[deepseek]` (api key + `model` for `Summarize`/`Advise`, `agent_model` for the tool-calling agent — both **required**; `FromFile` rejects empty values so startup fails fast, and no model name is hardcoded in Go), `[jina]` (api key for the `agent`'s jina fallback fetcher). `[storage]`（`db_path`，推送记录 SQLite 文件路径，**必填** —— `FromFile` 拒绝空值，容器里对应 `docker-compose.yml` 挂载的 `./data:/data` 卷）。`chat_id` and each `admin_ids` entry are stored as strings and `ParseInt`'d in `main` to avoid TOML int issues. `config.toml` is the template; `myconfig.toml` is a local (gitignored-style) variant.
 
 `[music]`（`/music` 的 WebDAV 凭据、上传目标与音源列表）是**可选段**：

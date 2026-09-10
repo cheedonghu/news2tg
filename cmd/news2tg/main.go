@@ -203,7 +203,7 @@ func main() {
 		adminIDs = append(adminIDs, id)
 	}
 
-	// 9.2.1) 解析每日天气 @ 提及列表（"id" 或 "id:显示名"，与 admin_ids 独立）。
+	// 9.2.1) 解析每日天气私聊收件人（"id" 或 "id:显示名"，与 admin_ids 独立）。
 	mentions := make([]config.Mention, 0, len(cfg.Features.WeatherMention))
 	for _, s := range cfg.Features.WeatherMention {
 		m, perr := config.ParseMention(s)
@@ -215,7 +215,14 @@ func main() {
 	}
 
 	// aiClient 已实现 Advise，天然满足 monitor.Advisor。
-	weatherMon := monitor.NewWeather(httpClient, tgClient, aiClient, mentions)
+	weatherMon := &monitor.Weather{} // 关闭天气时无需配置和风凭据。
+	if cfg.Features.WeatherEnabled {
+		weatherMon, err = monitor.NewWeather(httpClient, tgClient, aiClient, mentions, cfg.QWeather)
+		if err != nil {
+			slog.Error("初始化和风天气失败", "err", err)
+			os.Exit(1)
+		}
+	}
 
 	// 9.2.2) 音乐 agent：/music 指令用。
 	//

@@ -125,7 +125,12 @@ func (t *Telegram) NotifyTo(ctx context.Context, chatID int64, content string) e
 // 再转一次会把 *加粗* 和 [链接](url) 的标记本身也转义掉。
 func (t *Telegram) NotifyMarkdown(ctx context.Context, content string) error {
 	slog.InfoContext(ctx, content)
-	msg := tgbotapi.NewMessage(t.chatID, content)
+	return t.NotifyMarkdownTo(ctx, t.chatID, content)
+}
+
+// NotifyMarkdownTo 向指定聊天发送预渲染 MarkdownV2，保留排版并复用全局节流。
+func (t *Telegram) NotifyMarkdownTo(ctx context.Context, chatID int64, content string) error {
+	msg := tgbotapi.NewMessage(chatID, content)
 	msg.ParseMode = tgbotapi.ModeMarkdownV2
 	msg.DisableWebPagePreview = false
 	if err := t.send(ctx, msg); err != nil {

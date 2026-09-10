@@ -47,4 +47,23 @@ go build -o bin/news2tg ./cmd/news2tg
   搜索下载歌曲并经 WebDAV 上传到 alist 挂载的网盘，进度以单条消息原地编辑的方式实时回报。
   两条指令都仅限 `[telegram] admin_ids` 白名单用户。
 
+### 每日天气私聊
+
+设置 `[features] weather_enabled = true` 后，每天按 `weather_push_time`（北京时间，默认 `07:00`）
+向 `weather_mention` 中的用户逐个私聊发送天气，不发送到 `[telegram] chat_id` 配置的频道。
+例如 `weather_mention = ["123456789:老王", "234567890"]`，仍兼容原来的显示名写法。
+请填写正数用户 ID；重复 ID 只发一次，空列表不发送。用户需先与机器人开始对话。
+单个用户发送失败会记录日志，继续发送给其他用户。启动时已过当天推送时间，会等待次日，不补发。
+
+天气数据源为和风天气，使用 Ed25519 JWT 认证。启用天气时需要配置 `[qweather]` 的
+`api_host`、`developer_id`、`project_id`、`key_id`、`private_key_path`，字段示例见 `config.toml`。
+私钥使用 PKCS8 PEM 格式，公钥需事先上传和风控制台。关闭天气时不读取私钥。
+城市编码仍写在 `weather_cities`，通过 GeoAPI 查询坐标后调用新版 `/weather/v1/daily`，
+按北京时间匹配当天日期。每城市每轮调用两次 API（城市查询、天气预报）。
+
+Docker 部署时，将私钥放在服务器 `./config/ed25519-private.pem`，配置路径填写
+`/config/ed25519-private.pem`；compose 将整个配置目录只读挂载到 `/config`。
+私钥不要提交 Git 或放入镜像。和风凭据的 API 限制应允许城市搜索和每日天气预报，
+应用限制需允许运行机器；`403 Security Restriction` 表示请求被安全限制拒绝。
+
 ## todo

@@ -3,30 +3,23 @@
 package monitor
 
 import (
-	"context"       // 上下文（取消、超时）
-	"encoding/json" // JSON 解析
-	"fmt"           // 拼字符串
-	"io"            // 读响应体
-	"log/slog"      // 结构化日志
-	"net/http"      // HTTP 请求/响应
-	"strconv"       // 字符串转数字
-	"strings"       // 分割 "HH:MM"
-	"time"          // 时间/定时
+	"context" // 上下文（取消、超时）
+
+	"errors" // 汇总多个收件人的发送错误
+	"fmt"    // 拼字符串
+
+	"log/slog" // 结构化日志
+	"net/http" // HTTP 请求/响应
+	"strconv"  // 字符串转数字
+	"strings"  // 分割 "HH:MM"
+	"time"     // 时间/定时
 
 	_ "time/tzdata" // 把时区库嵌进二进制，保证 Windows/容器都能 LoadLocation
 
 	"github.com/cheedonghu/news2tg/internal/config"
 	"github.com/cheedonghu/news2tg/internal/logx"
-	"github.com/cheedonghu/news2tg/internal/notify"
 	"github.com/cheedonghu/news2tg/internal/tools"
 )
-
-// 中国天气网 cityinfo 接口基址；按城市编码拼 "{base}/{code}.html"。
-// 非官方接口：只取「城市名 + 状况 + 高/低温」，字段少但足够当日预报。
-const weatherCityInfoBase = "http://www.weather.com.cn/data/cityinfo"
-
-// 伪装成浏览器 UA；该非官方接口对无头请求（无 UA）可能拒绝响应。
-const weatherUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
 // Advisor 是本 monitor 依赖的「穿衣建议」能力（本地接口，便于测试注入 fake）。
 // ai.DeepSeek 实现了 Advise，所以 *ai.DeepSeek 自动满足 Advisor。
@@ -34,76 +27,33 @@ type Advisor interface {
 	Advise(ctx context.Context, weatherText string) (string, error)
 }
 
-// cityInfoResp 对应 cityinfo 接口的 JSON：{"weatherinfo":{...}}。
-type cityInfoResp struct {
-	WeatherInfo struct {
-		City    string `json:"city"`
-		Temp1   string `json:"temp1"` // 最高温
-		Temp2   string `json:"temp2"` // 最低温
-		Weather string `json:"weather"`
-	} `json:"weatherinfo"`
+// WeatherNotifier 只允许显式指定收件人，避免天气误发到默认频道。
+// Telegram 实现该接口，发送仍共用客户端已有的节流机制。
+type WeatherNotifier interface {
+	NotifyMarkdownTo(ctx context.Context, chatID int64, content string) error
+}
+
+// weatherSource 隔离数据源与定时/推送逻辑。
+type weatherSource interface {
+	fetch(context.Context, *http.Client, string, string) (cityWeather, error)
 }
 
 // Weather 是「每日天气」monitor 实例。字段全私有，只能经 NewWeather 构造。
 type Weather struct {
 	httpClient *http.Client     // 共享连接池
-	notifier   notify.Notifier  // 推送渠道
+	notifier   WeatherNotifier  // 私聊推送渠道
 	advisor    Advisor          // 穿衣建议（可注入 fake）
-	mentions   []config.Mention // 每日 @ 的人
-	baseURL    string           // cityinfo 基址；测试时替换为 httptest server
+	mentions   []config.Mention // 私聊收件人（沿用原配置格式）
+	source     weatherSource    // 和风天气数据源
 }
 
-// NewWeather 构造函数，注入依赖。baseURL 用生产常量，测试时字面量构造覆盖。
-func NewWeather(httpClient *http.Client, notifier notify.Notifier, advisor Advisor, mentions []config.Mention) *Weather {
-	return &Weather{
-		httpClient: httpClient,
-		notifier:   notifier,
-		advisor:    advisor,
-		mentions:   mentions,
-		baseURL:    weatherCityInfoBase,
-	}
-}
-
-// fetchCity 拉单个城市的当日天气。失败返回零值 + error，由上层决定跳过。
-func (w *Weather) fetchCity(ctx context.Context, code string) (cityWeather, error) {
-	url := fmt.Sprintf("%s/%s.html", w.baseURL, code)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// NewWeather 在启动时校验私钥；天气未启用时调用方不构造，避免影响其他功能。
+func NewWeather(httpClient *http.Client, notifier WeatherNotifier, advisor Advisor, mentions []config.Mention, qc config.QWeather) (*Weather, error) {
+	source, err := newQWeather(qc)
 	if err != nil {
-		return cityWeather{}, err
+		return nil, err
 	}
-	req.Header.Set("User-Agent", weatherUserAgent) // 无 UA 可能被该非官方接口拒绝
-
-	resp, err := w.httpClient.Do(req)
-	if err != nil {
-		return cityWeather{}, fmt.Errorf("network: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// 非 2xx 直接当失败（如 404）。
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return cityWeather{}, fmt.Errorf("bad status %d for code %s", resp.StatusCode, code)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return cityWeather{}, fmt.Errorf("read body: %w", err)
-	}
-
-	var r cityInfoResp
-	if err := json.Unmarshal(body, &r); err != nil {
-		return cityWeather{}, fmt.Errorf("parse json: %w", err)
-	}
-	// city 为空说明接口没给有效数据，视作失败。
-	if r.WeatherInfo.City == "" {
-		return cityWeather{}, fmt.Errorf("empty weatherinfo for code %s", code)
-	}
-
-	return cityWeather{
-		Name:    r.WeatherInfo.City,
-		Weather: r.WeatherInfo.Weather,
-		High:    r.WeatherInfo.Temp1,
-		Low:     r.WeatherInfo.Temp2,
-	}, nil
+	return &Weather{httpClient: httpClient, notifier: notifier, advisor: advisor, mentions: mentions, source: source}, nil
 }
 
 // parsePushTime 解析 "HH:MM" 推送时间。
@@ -139,10 +89,10 @@ func nextRun(now time.Time, hh, mm int, loc *time.Location) time.Time {
 
 // cityWeather 是单个城市抓取后的当日天气（已从接口 JSON 抽出）。
 type cityWeather struct {
-	Name    string // 城市名（接口返回的 city 字段）
+	Name    string // GeoAPI 返回的城市名
 	Weather string // 天气状况，如 "多云"
-	High    string // 最高温 temp1，如 "33℃"
-	Low     string // 最低温 temp2，如 "24℃"
+	High    string // 当日最高温，如 "33℃"
+	Low     string // 当日最低温，如 "24℃"
 }
 
 // buildMessage 把多城市天气 + 穿衣建议 + @ 提及拼成一条预渲染 MarkdownV2 消息。
@@ -197,9 +147,26 @@ func buildMessage(date string, items []cityWeather, advice string, mentions []co
 // 单城市抓取失败只跳过；全部失败则不推送（返回 nil，等下一天）。
 // date 由调用方（Run）按东八区算好传入，本函数不再自行取 time.Now，便于测试且避免时区错位。
 func (w *Weather) pushOnce(ctx context.Context, cfg *config.Config, date string) error {
+	// 正数用户 ID 才能作为私聊目标；按配置顺序去重，防止重复配置导致多发。
+	var recipients []int64
+	seen := make(map[int64]bool)
+	for _, m := range w.mentions {
+		if m.ID <= 0 {
+			slog.WarnContext(ctx, "跳过非法天气私聊用户 ID", "user_id", m.ID)
+			continue
+		}
+		if !seen[m.ID] {
+			seen[m.ID] = true
+			recipients = append(recipients, m.ID)
+		}
+	}
+	if len(recipients) == 0 {
+		slog.WarnContext(ctx, "天气私聊收件人为空，跳过本轮推送")
+		return nil
+	}
 	var items []cityWeather
 	for _, code := range cfg.Features.WeatherCities {
-		cw, err := w.fetchCity(ctx, code)
+		cw, err := w.source.fetch(ctx, w.httpClient, code, date)
 		if err != nil {
 			slog.ErrorContext(ctx, "天气抓取失败，跳过该城市", "code", code, "err", err)
 			continue
@@ -219,10 +186,22 @@ func (w *Weather) pushOnce(ctx context.Context, cfg *config.Config, date string)
 	// 建议失败已在 Advise 内兜底（返回兜底串 + nil），这里 err 恒为 nil，忽略即可。
 	advice, _ := w.advisor.Advise(ctx, sb.String())
 
-	msg := buildMessage(date, items, advice, w.mentions)
-
-	// 单条预渲染 MarkdownV2，正对应 NotifyMarkdown 的语义。
-	return w.notifier.NotifyMarkdown(ctx, msg)
+	// 私聊正文不需要 @ 列表，也不向收件人展示其他人的用户 ID。
+	msg := buildMessage(date, items, advice, nil) + "\n数据来源：[和风天气](https://www.qweather.com/)"
+	var sendErrors []error
+	for _, id := range recipients {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := w.notifier.NotifyMarkdownTo(ctx, id, msg); err != nil {
+			// 一个用户无法接收时继续处理后续用户，最后汇总错误供 Run 记录。
+			slog.ErrorContext(ctx, "天气私聊推送失败", "user_id", id, "err", err)
+			sendErrors = append(sendErrors, fmt.Errorf("用户 %d: %w", id, err))
+			continue
+		}
+		slog.InfoContext(ctx, "天气私聊推送成功", "user_id", id)
+	}
+	return errors.Join(sendErrors...)
 }
 
 // Run 实现 monitor.Monitor：每天定点推送一次天气。
@@ -261,7 +240,7 @@ func (w *Weather) Run(ctx context.Context, cfg *config.Config) error {
 		// 若用机器本地时间（容器多为 UTC），标题日期会显示成前一天。
 		date := time.Now().In(loc).Format("2006-01-02")
 		if err := w.pushOnce(cctx, cfg, date); err != nil {
-			// pushOnce 里的 NotifyMarkdown 在 ctx 取消时会返回 ctx.Err() —— 那属于正常关闭。
+			// pushOnce 在 ctx 取消时会返回 ctx.Err() —— 那属于正常关闭。
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
